@@ -43,6 +43,8 @@ function Get-MAUApps {
         [PSCustomObject]@{AppID = "0409TEAMS10";    AppName = "Teams 1.0 classic"}
         [PSCustomObject]@{AppID = "0409TEAMS21";    AppName = "Teams 2.1"}
         [PSCustomObject]@{AppID = "0409OLIC02";     AppName = "Office Licensing Helper"}
+        [PSCustomObject]@{AppID = "0409MSRH01";     AppName = "Remote Help"}
+        [PSCustomObject]@{AppID = "0409MSQA01";     AppName = "Quick Assist"}
     )
 
     $pos = 1
