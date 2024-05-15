@@ -44,11 +44,33 @@ function Get-MAUApp {
 
     # Process Version Check XML
     Write-Verbose "$logPrefix Getting App Version Info"
-    $versionObj = [PSCustomObject](Get-PlistObjectFromURI -URI $app.CollateralURIs.ChkXml -HttpClient $HttpClient)
-    $app.VersionInfo = [PSCustomObject]@{
-        Version = $versionObj.'Update Version'
-        Date = Get-Date $versionObj.Date
-        Type = $versionObj.Type
+    try {
+        $versionObj = [PSCustomObject](Get-PlistObjectFromURI -URI $app.CollateralURIs.ChkXml -HttpClient $HttpClient)
+        $app.VersionInfo = [PSCustomObject]@{
+            Version = $versionObj.'Update Version'
+            Date = Get-Date $versionObj.Date
+            Type = $versionObj.Type
+        }
+    }
+    catch [System.Net.Http.HttpRequestException] {
+        $statusCode = $_.Exception.StatusCode
+
+        # Rethrow exception if its not a 404
+        if ($statusCode -ne [System.Net.HttpStatusCode]::NotFound) {
+            throw
+        }
+
+        # Rethrow if we don't have a single app to use as version/data pont of truth
+        if ($app.Packages.Count -ne 1) {
+            throw
+        }
+        
+        # Use data from the App XML
+        $app.VersionInfo = [PSCustomObject]@{
+            Version = $app.Packages.'Update Version'
+            Date = $app.Packages.Date
+            Type = $app.Packages.Type
+        }
     }
 
     # Fix unknown versions
