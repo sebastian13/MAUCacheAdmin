@@ -55,8 +55,8 @@ function Get-MAUApp {
     catch [System.Net.Http.HttpRequestException] {
         $statusCode = $_.Exception.StatusCode
 
-        # Rethrow exception if its not a 404
-        if ($statusCode -ne [System.Net.HttpStatusCode]::NotFound) {
+        # Rethrow exception if its not a 404, Powershell 5.1 does not have a StatusCode property on HttpRequestException so we check the message as fallback
+        if (($null -ne $statusCode -and $statusCode -ne [System.Net.HttpStatusCode]::NotFound) -or $_.Exception.Message -notlike "*404 (Not Found)*") {
             throw
         }
 
