@@ -12,14 +12,13 @@
 RootModule = 'MAUCacheAdmin.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.3'
+ModuleVersion = '1.0.4'
 
 # ID used to uniquely identify this module
 GUID = '41ac64b9-6f2c-46a2-9d55-e6fb6c3d75ad'
 
 # Author of this module
 Author = 'Nick Ireland'
-
 
 # Description of the functionality provided by this module
 Description = 'Module for managing Microsoft AutoUpdate cache.'
