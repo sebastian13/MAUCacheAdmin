@@ -23,23 +23,25 @@ function Get-MAUApps {
 
     # Define the target apps
     $targetApps = @(
-        [PSCustomObject]@{AppID = "0409MSau04";     AppName = "MAU 4.x";                    Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409MSWD2019";   AppName = "Word 365/2024/2021";         Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409XCEL2019";   AppName = "Excel 365/2024/2021";        Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409PPT32019";   AppName = "PowerPoint 365/2024/2021";   Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409OPIM2019";   AppName = "Outlook 365/2024/2021";      Channels = @("Current", "Preview", "Beta", "CurrentThrottle")}
-        [PSCustomObject]@{AppID = "0409ONMC2019";   AppName = "OneNote 365/2024/2021";      Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409MSFB16";     AppName = "Skype for Business";         Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409IMCP01";     AppName = "Intune Company Portal";      Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409MSRD10";     AppName = "Windows App";                Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409ONDR18";     AppName = "OneDrive";                   Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409WDAV00";     AppName = "Defender ATP";               Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409EDGE01";     AppName = "Edge";                       Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409TEAMS21";    AppName = "Teams 2.1";                  Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409OLIC02";     AppName = "Office Licensing Helper";    Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409MSRH01";     AppName = "Remote Help";                Channels = @("Current", "Preview", "Beta")}
-        [PSCustomObject]@{AppID = "0409MSQA01";     AppName = "Quick Assist";               Channels = @("Current")}
-        [PSCustomObject]@{AppID = "0409MSCP10";     AppName = "Microsoft Copilot";          Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409MSau04";        AppName = "MAU 4.x";                    Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409MSWD2019";      AppName = "Word 365/2024/2021";         Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409XCEL2019";      AppName = "Excel 365/2024/2021";        Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409PPT32019";      AppName = "PowerPoint 365/2024/2021";   Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409OPIM2019";      AppName = "Outlook 365/2024/2021";      Channels = @("Current", "Preview", "Beta", "CurrentThrottle")}
+        [PSCustomObject]@{AppID = "0409ONMC2019";      AppName = "OneNote 365/2024/2021";      Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409MSFB16";        AppName = "Skype for Business";         Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409IMCP01";        AppName = "Intune Company Portal";      Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409MSRD10";        AppName = "Windows App";                Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409ONDR18";        AppName = "OneDrive";                   Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409WDAV00";        AppName = "Defender for Endpoint";      Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409WDAVSHIM";      AppName = "Defender Shim";              Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409WDAVCONSUMER";  AppName = "Defender Consumers";         Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409EDGE01";        AppName = "Edge";                       Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409TEAMS21";       AppName = "Teams 2.1";                  Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409OLIC02";        AppName = "Office Licensing Helper";    Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409MSRH01";        AppName = "Remote Help";                Channels = @("Current", "Preview", "Beta")}
+        [PSCustomObject]@{AppID = "0409MSQA01";        AppName = "Quick Assist";               Channels = @("Current")}
+        [PSCustomObject]@{AppID = "0409MSCP10";        AppName = "Microsoft Copilot";          Channels = @("Current", "Preview", "Beta")}
     )
 
     $filteredApps = $targetApps | Where-Object {$_.Channels -contains $Channel}
