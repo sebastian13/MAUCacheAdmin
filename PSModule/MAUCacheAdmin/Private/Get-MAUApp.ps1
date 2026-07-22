@@ -90,7 +90,11 @@ function Get-MAUApp {
     }
     Write-Verbose "$logPrefix Found $($historicAppVersions.Count) historic versions ($($historicAppVersions -join ", "))"
     $historicAppVersions | ForEach-Object {
-        [System.Collections.Specialized.OrderedDictionary[]]$historyAppPackageDicts = Get-PlistObjectFromURI -URI ([Uri]::new($ChannelURI, "$($AppID)_$_.xml")) -HttpClient $HttpClient
+        [System.Collections.Specialized.OrderedDictionary[]]$historyAppPackageDicts = Get-PlistObjectFromURI -URI ([Uri]::new($ChannelURI, "$($AppID)_$_.xml")) -HttpClient $HttpClient -Optional
+        if ($null -eq $historyAppPackageDicts) {
+            Write-Verbose "$logPrefix No object returned from Get-PlistObjectFromURI for version $_"
+            return
+        }
         $historyAppPackageObjs = @(ConvertFrom-AppPackageDictionary -AppPackageDictionaries $historyAppPackageDicts)
         $app.HistoricPackages[$_] = $historyAppPackageObjs
     }
