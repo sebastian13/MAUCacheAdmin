@@ -15,7 +15,7 @@ Its been tested with PS 5.1 on Windows, PS 7.3.4 on Windows and macOS.
 $builds = Get-MAUProductionBuilds
 
 # Get the production apps
-$apps = Get-MAUApps -Channel Production
+$apps = Get-MAUApps -Channel Current
 
 # Get the download jobs for the apps limited by the builds
 $dlJobs = Get-MAUCacheDownloadJobs -MAUApps $apps -DeltaFromBuildLimiter $builds
@@ -34,7 +34,7 @@ MAU will be trying to download files such as `Word_16.67.22111300_to_16.69.23011
 $builds = Get-MAUProductionBuilds
 
 # Get the production apps
-$apps = Get-MAUApps -Channel Production
+$apps = Get-MAUApps -Channel Current
 
 # Get the download jobs for the apps limited by the builds
 $dlJobs = Get-MAUCacheDownloadJobs -MAUApps $apps -DeltaFromBuildLimiter ($builds + "16.67.22111300") -IncludeHistoricDeltas
@@ -47,7 +47,7 @@ This example will cache everything based on the packages in each apps collateral
 Warning, this will download 1340 files totalling ~266GB of content at the time of writing this!
 ```PowerShell
 # Get the production apps
-$apps = Get-MAUApps -Channel Production
+$apps = Get-MAUApps -Channel Current
 
 # Get the download jobs for the apps limited by the builds (This may take a while)
 $dlJobs = Get-MAUCacheDownloadJobs -MAUApps $apps -IncludeHistoricDeltas -IncludeHistoricVersions
@@ -67,7 +67,7 @@ Returns a string array containing the current production build versions. This ar
 Returns an array of objects that represents each app with its various Collateral URIs and Packages
 #### Arguments
  - Channel
-   - Set the update channel, valid values: `Production`, `Preview`, `Beta`
+   - Set the update channel, valid values: `Current`, `Preview`, `Beta`, `CurrentThrottle`
 
 
 ### `Get-MAUCacheDownloadJobs`
