@@ -117,7 +117,7 @@ CleanupOldFiles () {
 		touch "$CACHEPATH/Microsoft_Word_16.30.19101301_Updater.pkg"
 		touch "$CACHEPATH/Microsoft_Word_16.43.20110804_Updater.pkg"
 		touch "$CACHEPATH/Microsoft_Word_16.54.21101001_Updater.pkg"
-		echo "Removing old files..."
+		echo "Removing old files not modified within $CLEANUP_DAYS days..."
 		find "$CACHEPATH" -type f -mtime +"$CLEANUP_DAYS" -print -delete
 	fi
 }
@@ -253,9 +253,11 @@ DownloadUpdatePackages () {
 			if [ -f "$CACHEPATH/$PACKAGENAME" ]; then
 				PACKAGESIZELOCAL=$(GetLocalSize "$PACKAGENAME")
 				if [ "$PACKAGESIZELOCAL" == "$PACKAGESIZECDN" ]; then
-					echo Package "$i" already exists in the cache ...skipping
+					# Update the timestamp to avoid cleanup if the package is still valid and in use
+					touch -c -m "$CACHEPATH/$PACKAGENAME"
+					echo Package "$PACKAGENAME" already exists in the cache ...updating timestamp
 				else
-					echo Package "$i" exists in the cache but is corrupt ...removing
+					echo Package "$PACKAGENAME" exists in the cache but is corrupt ...removing
 					rm -f "$CACHEPATH/$PACKAGENAME"
 					DownloadPackage "$PACKAGEURL" "$APPNAME" "$PACKAGESIZECDNMEG"
 				fi
