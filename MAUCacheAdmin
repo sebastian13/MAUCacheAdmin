@@ -250,7 +250,9 @@ DownloadUpdatePackages () {
 			PACKAGEURL=$(ResolveDownloadUrl "$i")
 			PACKAGESIZECDN=$(GetDownloadSize "$i")
 			PACKAGESIZECDNMEG=$(expr $PACKAGESIZECDN / 1024 / 1024)
+			BUILDTIMESTAMP=$(GetBuildTimestampFromXML "$APPID")
 			if [ -f "$CACHEPATH/$PACKAGENAME" ]; then
+				PACKAGESIZELOCAL=$(GetLocalSize "$PACKAGENAME")
 				PACKAGESIZELOCAL=$(GetLocalSize "$PACKAGENAME")
 				if [ "$PACKAGESIZELOCAL" == "$PACKAGESIZECDN" ]; then
 					# Update the timestamp to avoid cleanup if the package is still valid and in use
@@ -262,7 +264,7 @@ DownloadUpdatePackages () {
 					DownloadPackage "$PACKAGEURL" "$APPNAME" "$PACKAGESIZECDNMEG"
 				fi
 			else
-				DownloadPackage "$PACKAGEURL" "$APPNAME" "$PACKAGESIZECDNMEG"
+				DownloadPackage "$PACKAGEURL" "$APPNAME" "$PACKAGESIZECDNMEG" "$BUILDTIMESTAMP"
 			fi
 		fi
 	done
@@ -276,6 +278,39 @@ GetAppVersionFromXML () {
 		echo "Legacy"
 	else
 		echo "$APPVER"
+	fi
+}
+
+GetBuildTimestampFromXML () {
+# Returns the build timestamp from the XML collateral in UTC ISO 8601 format
+	XML="$1"".xml"
+	local BUILDTIMESTAMP=($(cd "$SCRATCH_AREA" && grep -A1 'Date' "$XML" | grep 'date' | sed -e 's,.*<date>\([^<]*\)</date>.*,\1,g' | tail -1))
+	echo "$BUILDTIMESTAMP"
+}
+
+SetPackageFileTimes () {
+# Applies the XML build timestamp to the downloaded package
+	local FILENAME="$1"
+	local BUILDTIMESTAMP="$2"
+
+	if [ -z "$BUILDTIMESTAMP" ] || [ ! -f "$CACHEPATH/$FILENAME" ]; then
+		return
+	fi
+
+	if [ "$PLATFORM" == "Darwin" ]; then
+		local TOUCHSTAMP=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$BUILDTIMESTAMP" "+%Y%m%d%H%M.%S" 2>/dev/null)
+		if [ -n "$TOUCHSTAMP" ]; then
+			touch -t "$TOUCHSTAMP" "$CACHEPATH/$FILENAME"
+		fi
+
+		if command -v SetFile >/dev/null 2>&1; then
+			local CREATESTAMP=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$BUILDTIMESTAMP" "+%m/%d/%Y %H:%M:%S" 2>/dev/null)
+			if [ -n "$CREATESTAMP" ]; then
+				SetFile -d "$CREATESTAMP" "$CACHEPATH/$FILENAME"
+			fi
+		fi
+	else
+		TZ=UTC touch -d "$BUILDTIMESTAMP" "$CACHEPATH/$FILENAME" 2>/dev/null
 	fi
 }
 
@@ -373,6 +408,7 @@ DownloadPackage () {
 	URL="$1"
 	APPLICATION="$2"
 	SIZE="$3"
+	BUILDTIMESTAMP="$4"
 	PACKAGE=$(basename "$1")
 	HipChatNotify
 	SlackNotify
@@ -383,6 +419,7 @@ DownloadPackage () {
 	echo Size:        "$SIZE" MB
 	echo URL:         "$URL"
 	(cd "$CACHEPATH" && curl --progress-bar --remote-name --location $URL)
+	SetPackageFileTimes "$PACKAGE" "$BUILDTIMESTAMP"
 }
 
 ShowCollateral () {
