@@ -249,14 +249,14 @@ DownloadUpdatePackages () {
 		if [ "$SKIPDOWNLOAD" == false ]; then
 			PACKAGEURL=$(ResolveDownloadUrl "$i")
 			PACKAGESIZECDN=$(GetDownloadSize "$i")
-			PACKAGESIZELOCAL=$(GetLocalSize "$PACKAGENAME")
 			PACKAGESIZECDNMEG=$(expr $PACKAGESIZECDN / 1024 / 1024)
 			if [ -f "$CACHEPATH/$PACKAGENAME" ]; then
+				PACKAGESIZELOCAL=$(GetLocalSize "$PACKAGENAME")
 				if [ "$PACKAGESIZELOCAL" == "$PACKAGESIZECDN" ]; then
 					echo Package "$i" already exists in the cache ...skipping
 				else
 					echo Package "$i" exists in the cache but is corrupt ...removing
-					(cd "$CACHEPATH" && rm -f "$i")
+					rm -f "$CACHEPATH/$PACKAGENAME"
 					DownloadPackage "$PACKAGEURL" "$APPNAME" "$PACKAGESIZECDNMEG"
 				fi
 			else
