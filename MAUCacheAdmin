@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TOOL_NAME="Microsoft AutoUpdate Cache Admin"
-TOOL_VERSION="3.9"
+TOOL_VERSION="3.10"
 
 ## Copyright (c) 2023 Microsoft Corp. All rights reserved.
 ## Scripts are not supported under any Microsoft standard support program or service. The scripts are provided AS IS without warranty of any kind.
@@ -150,6 +150,118 @@ InitializeCacheArea () {
 	fi
 }
 
+InitializeRunMetrics () {
+# Initializes per-run capacity metrics
+	ACTIVE_EXISTING_BYTES=0
+	ACTIVE_EXISTING_COUNT=0
+	MISSING_DOWNLOAD_BYTES=0
+	MISSING_DOWNLOAD_COUNT=0
+	CLEANUP_CANDIDATE_BYTES=0
+	CLEANUP_CANDIDATE_COUNT=0
+	FREE_SPACE_START_BYTES=0
+	FREE_SPACE_CURRENT_BYTES=0
+	FREE_SPACE_PROJECTED_BYTES=0
+	PACKAGE_NAME_LIST=()
+	PACKAGE_URL_LIST=()
+	PACKAGE_SIZE_LIST=()
+	PACKAGE_SIZE_MEG_LIST=()
+	PACKAGE_TIMESTAMP_LIST=()
+	PACKAGE_APPNAME_LIST=()
+	PACKAGE_COUNT=0
+	CURRENT_PACKAGE_START_INDEX=0
+	DOWNLOAD_APPNAME_LIST=()
+	DOWNLOAD_URL_LIST=()
+	DOWNLOAD_SIZE_LIST=()
+	DOWNLOAD_TIMESTAMP_LIST=()
+	DOWNLOAD_COUNT=0
+	DOWNLOADED_FILES_LIST=()
+}
+
+QueueDownloadPlanEntry () {
+# Adds a package to the in-memory download queue
+	local APPNAME="$1"
+	local PACKAGEURL="$2"
+	local PACKAGESIZECDNMEG="$3"
+	local BUILDTIMESTAMP="$4"
+	DOWNLOAD_APPNAME_LIST[$DOWNLOAD_COUNT]="$APPNAME"
+	DOWNLOAD_URL_LIST[$DOWNLOAD_COUNT]="$PACKAGEURL"
+	DOWNLOAD_SIZE_LIST[$DOWNLOAD_COUNT]="$PACKAGESIZECDNMEG"
+	DOWNLOAD_TIMESTAMP_LIST[$DOWNLOAD_COUNT]="$BUILDTIMESTAMP"
+	DOWNLOAD_COUNT=$((DOWNLOAD_COUNT + 1))
+}
+
+RunDownloadPlan () {
+# Executes queued downloads after cleanup
+	for ((idx=0; idx<DOWNLOAD_COUNT; idx++))
+	do
+		APPNAME="${DOWNLOAD_APPNAME_LIST[$idx]}"
+		PACKAGEURL="${DOWNLOAD_URL_LIST[$idx]}"
+		PACKAGESIZECDNMEG="${DOWNLOAD_SIZE_LIST[$idx]}"
+		BUILDTIMESTAMP="${DOWNLOAD_TIMESTAMP_LIST[$idx]}"
+		[ -z "$PACKAGEURL" ] && continue
+		PACKAGENAME=$(basename "$PACKAGEURL")
+		if [ ! -f "$CACHEPATH/$PACKAGENAME" ]; then
+			if ! DownloadPackage "$PACKAGEURL" "$APPNAME" "$PACKAGESIZECDNMEG" "$BUILDTIMESTAMP"; then
+				cecho "$yellow" "Warning: download failed for $PACKAGENAME; continuing with next package" >&2
+			fi
+		fi
+	done
+}
+
+GetFileSizeByPath () {
+# Gets the size of a file from an absolute path
+	local FILEPATH="$1"
+	if [ "$PLATFORM" == "Darwin" ]; then
+		stat -qf%z "$FILEPATH"
+	else
+		stat -c%s "$FILEPATH"
+	fi
+}
+
+GetFreeSpaceBytes () {
+# Returns free bytes for the filesystem that hosts CACHEPATH
+	df -kP "$CACHEPATH" | awk 'NR==2 {print $4 * 1024}'
+}
+
+FormatBytesToGB () {
+# Formats bytes to GiB with two decimals
+	local BYTES="$1"
+	awk -v b="$BYTES" 'BEGIN {printf "%.2f", b / 1024 / 1024 / 1024}'
+}
+
+CalculateCleanupCandidates () {
+# Calculates cleanup candidates based on configured retention
+	CLEANUP_CANDIDATE_BYTES=0
+	CLEANUP_CANDIDATE_COUNT=0
+
+	if [ "$CLEANUP" != true ]; then
+		return
+	fi
+
+	while IFS= read -r -d '' FILEPATH
+	do
+		FILESIZE=$(GetFileSizeByPath "$FILEPATH")
+		CLEANUP_CANDIDATE_BYTES=$((CLEANUP_CANDIDATE_BYTES + FILESIZE))
+		CLEANUP_CANDIDATE_COUNT=$((CLEANUP_CANDIDATE_COUNT + 1))
+	done < <(find "$CACHEPATH" -type f -mtime +"$CLEANUP_DAYS" -print0)
+}
+
+ShowCapacitySummary () {
+# Shows capacity plan summary for this run
+	CalculateCleanupCandidates
+	FREE_SPACE_CURRENT_BYTES=$(GetFreeSpaceBytes)
+	FREE_SPACE_PROJECTED_BYTES=$((FREE_SPACE_START_BYTES - MISSING_DOWNLOAD_BYTES + CLEANUP_CANDIDATE_BYTES))
+
+	echo "----------------------------------------------------------------------------------------"
+	echo "Capacity Summary"
+	echo "Active existing:       $ACTIVE_EXISTING_COUNT files ($(FormatBytesToGB "$ACTIVE_EXISTING_BYTES") GiB)"
+	echo "To download:           $MISSING_DOWNLOAD_COUNT files ($(FormatBytesToGB "$MISSING_DOWNLOAD_BYTES") GiB)"
+	echo "Cleanup candidates:    $CLEANUP_CANDIDATE_COUNT files ($(FormatBytesToGB "$CLEANUP_CANDIDATE_BYTES") GiB)"
+	echo "Free space now:        $(FormatBytesToGB "$FREE_SPACE_CURRENT_BYTES") GiB"
+	echo "Projected free space:  $(FormatBytesToGB "$FREE_SPACE_PROJECTED_BYTES") GiB"
+	echo "----------------------------------------------------------------------------------------"
+}
+
 CleanupOldFiles () {
 # Cleanup old cache and manifest files
 	if [ "$CLEANUP" = true ]; then
@@ -278,13 +390,13 @@ ArchiveCollateralFiles () {
 	if [ "$NOCOLLATERAL" = true ]; then
 		return 0
 	fi
-		if [ ! -d "$CACHEPATH/collateral" ]; then
-			mkdir "$CACHEPATH/collateral"
-		fi
-		local APPVER=$(GetAppVersionFromXML "$APPID")
-		if [ ! -d "$CACHEPATH/collateral/$APPVER" ]; then
-			mkdir "$CACHEPATH/collateral/$APPVER"
-		fi
+	if [ ! -d "$CACHEPATH/collateral" ]; then
+		mkdir "$CACHEPATH/collateral"
+	fi
+	local APPVER=$(GetAppVersionFromXML "$APPID")
+	if [ ! -d "$CACHEPATH/collateral/$APPVER" ]; then
+		mkdir "$CACHEPATH/collateral/$APPVER"
+	fi
 	for REQUIRED_FILE in "$APPID-chk.xml" "$APPID.xml" "$APPID.cat"; do
 		if [ ! -f "$SCRATCH_AREA/$REQUIRED_FILE" ]; then
 			cecho "$yellow" "Warning: missing collateral file $REQUIRED_FILE for $APPID; skipping archive" >&2
@@ -299,54 +411,126 @@ ArchiveCollateralFiles () {
 	fi
 }
 
-DownloadUpdatePackages () {
-# Logic to evaluate what files need to be downloaded into the cache
+BuildPackageListFromManifest () {
+# Identifies active packages for an app and appends them to the shared in-memory package list
 	APPID="$1"
-	APPNAME=$(GetAppNameFromMAUID "$1")
-	if [ "$APPID" == "0409MSOF14" ] || [ "$APPID" == "0409UCCP14" ]; then
-		LOCATION=($(cd $SCRATCH_AREA && (grep -o 'http[^\"]*dmg' $APPID".xml") | sort | uniq))
-	else
-		LOCATION=($(cd $SCRATCH_AREA && (grep -o 'http[^\"]*pkg' $APPID".xml") | sort | uniq))
+	CURRENT_PACKAGE_START_INDEX=$PACKAGE_COUNT
+	APPNAME=$(GetAppNameFromMAUID "$APPID")
+	LOCATION=()
+	MANIFEST_FILE="$SCRATCH_AREA/$APPID.xml"
+	if [ ! -f "$MANIFEST_FILE" ]; then
+		notice_body="Warning: manifest file not found for $APPID; skipping package build"
+		cecho "$yellow" "$notice_body" >&2
+		return 0
 	fi
+
+	if [ "$APPID" == "0409MSOF14" ] || [ "$APPID" == "0409UCCP14" ]; then
+		LOCATION=($(cd "$SCRATCH_AREA" 2>/dev/null && { grep -o 'http[^"]*dmg' "$APPID.xml" 2>/dev/null || true; } | sort | uniq))
+	else
+		LOCATION=($(cd "$SCRATCH_AREA" 2>/dev/null && { grep -o 'http[^"]*pkg' "$APPID.xml" 2>/dev/null || true; } | sort | uniq))
+	fi
+
+	BUILDTIMESTAMP=$(GetBuildTimestampFromXML "$APPID")
+
 	for i in "${LOCATION[@]}"
 	do
 		SKIPDOWNLOAD=false
 		PACKAGENAME=$(basename "$i")
 		if [[ $PACKAGENAME == *"Delta"* ]]; then
 			if [ "${#PRODBUILDS[@]}" -gt 0 ]; then
-			for PRODVER in "${PRODBUILDS[@]}"
-			do
-				if [[ $PACKAGENAME == *"$PRODVER""_to_"* ]]; then
-					SKIPDOWNLOAD=false
-					break
-				else
-					SKIPDOWNLOAD=true
-				fi
-			done
+				for PRODVER in "${PRODBUILDS[@]}"
+				do
+					if [[ $PACKAGENAME == *"$PRODVER""_to_"* ]]; then
+						SKIPDOWNLOAD=false
+						break
+					else
+						SKIPDOWNLOAD=true
+					fi
+				done
 			else
 				SKIPDOWNLOAD=false
 			fi
 		fi
+
 		if [ "$SKIPDOWNLOAD" == false ]; then
 			PACKAGEURL=$(ResolveDownloadUrl "$i")
 			PACKAGESIZECDN=$(GetDownloadSize "$i")
-			PACKAGESIZECDNMEG=$(expr $PACKAGESIZECDN / 1024 / 1024)
-			BUILDTIMESTAMP=$(GetBuildTimestampFromXML "$APPID")
-			if [ -f "$CACHEPATH/$PACKAGENAME" ]; then
-				PACKAGESIZELOCAL=$(GetLocalSize "$PACKAGENAME")
-				PACKAGESIZELOCAL=$(GetLocalSize "$PACKAGENAME")
-				if [ "$PACKAGESIZELOCAL" == "$PACKAGESIZECDN" ]; then
-					# Update the timestamp to avoid cleanup if the package is still valid and in use
-					touch -c -m "$CACHEPATH/$PACKAGENAME"
-					echo Package "$PACKAGENAME" already exists in the cache ...updating timestamp
-				else
-					echo Package "$PACKAGENAME" exists in the cache but is corrupt ...removing
-					rm -f "$CACHEPATH/$PACKAGENAME"
-					DownloadPackage "$PACKAGEURL" "$APPNAME" "$PACKAGESIZECDNMEG"
-				fi
+			if [[ "$PACKAGESIZECDN" =~ ^[0-9]+$ ]]; then
+				PACKAGESIZECDNMEG=$((PACKAGESIZECDN / 1024 / 1024))
 			else
-				DownloadPackage "$PACKAGEURL" "$APPNAME" "$PACKAGESIZECDNMEG" "$BUILDTIMESTAMP"
+				PACKAGESIZECDNMEG=0
 			fi
+
+			PACKAGE_NAME_LIST[$PACKAGE_COUNT]="$PACKAGENAME"
+			PACKAGE_URL_LIST[$PACKAGE_COUNT]="$PACKAGEURL"
+			PACKAGE_SIZE_LIST[$PACKAGE_COUNT]="$PACKAGESIZECDN"
+			PACKAGE_SIZE_MEG_LIST[$PACKAGE_COUNT]="$PACKAGESIZECDNMEG"
+			PACKAGE_TIMESTAMP_LIST[$PACKAGE_COUNT]="$BUILDTIMESTAMP"
+			PACKAGE_APPNAME_LIST[$PACKAGE_COUNT]="$APPNAME"
+			PACKAGE_COUNT=$((PACKAGE_COUNT + 1))
+		fi
+	done
+}
+
+CountExistingPackages () {
+# Counts packages already present locally without changing cache state
+	for ((idx=0; idx<PACKAGE_COUNT; idx++))
+	do
+		PACKAGENAME="${PACKAGE_NAME_LIST[$idx]}"
+		PACKAGESIZECDN="${PACKAGE_SIZE_LIST[$idx]}"
+		if [ -f "$CACHEPATH/$PACKAGENAME" ]; then
+			PACKAGESIZELOCAL=$(GetLocalSize "$PACKAGENAME")
+			if [ "$PACKAGESIZELOCAL" == "$PACKAGESIZECDN" ]; then
+				ACTIVE_EXISTING_COUNT=$((ACTIVE_EXISTING_COUNT + 1))
+				ACTIVE_EXISTING_BYTES=$((ACTIVE_EXISTING_BYTES + PACKAGESIZELOCAL))
+			fi
+		fi
+	done
+}
+
+CheckCachedPackages () {
+# Refreshes mtimes and removes corrupt cached packages from the shared in-memory package list
+	for ((idx=0; idx<PACKAGE_COUNT; idx++))
+	do
+		PACKAGENAME="${PACKAGE_NAME_LIST[$idx]}"
+		PACKAGESIZECDN="${PACKAGE_SIZE_LIST[$idx]}"
+		if [ -f "$CACHEPATH/$PACKAGENAME" ]; then
+			PACKAGESIZELOCAL=$(GetLocalSize "$PACKAGENAME")
+			if [ "$PACKAGESIZELOCAL" == "$PACKAGESIZECDN" ]; then
+				touch -c -m "$CACHEPATH/$PACKAGENAME"
+				echo Package "$PACKAGENAME" already exists in the cache ...updating timestamp
+			else
+				echo Package "$PACKAGENAME" exists in the cache but is corrupt ...removing
+				rm -f "$CACHEPATH/$PACKAGENAME"
+				APPNAME="${PACKAGE_APPNAME_LIST[$idx]}"
+				PACKAGEURL="${PACKAGE_URL_LIST[$idx]}"
+				PACKAGESIZECDNMEG="${PACKAGE_SIZE_MEG_LIST[$idx]}"
+				BUILDTIMESTAMP="${PACKAGE_TIMESTAMP_LIST[$idx]}"
+				if [ -n "$PACKAGEURL" ]; then
+					MISSING_DOWNLOAD_COUNT=$((MISSING_DOWNLOAD_COUNT + 1))
+					MISSING_DOWNLOAD_BYTES=$((MISSING_DOWNLOAD_BYTES + PACKAGESIZECDN))
+					QueueDownloadPlanEntry "$APPNAME" "$PACKAGEURL" "$PACKAGESIZECDNMEG" "$BUILDTIMESTAMP"
+				fi
+			fi
+		fi
+	done
+}
+
+BuildDownloadPlan () {
+# Counts, sizes, and queues packages that are not present locally
+	APPNAME="$1"
+	local PACKAGE_START_INDEX="$2"
+	for ((idx=PACKAGE_START_INDEX; idx<PACKAGE_COUNT; idx++))
+	do
+		PACKAGENAME="${PACKAGE_NAME_LIST[$idx]}"
+		PACKAGESIZECDN="${PACKAGE_SIZE_LIST[$idx]}"
+		PACKAGEURL="${PACKAGE_URL_LIST[$idx]}"
+		PACKAGESIZECDNMEG="${PACKAGE_SIZE_MEG_LIST[$idx]}"
+		BUILDTIMESTAMP="${PACKAGE_TIMESTAMP_LIST[$idx]}"
+		if [ ! -f "$CACHEPATH/$PACKAGENAME" ]; then
+			MISSING_DOWNLOAD_COUNT=$((MISSING_DOWNLOAD_COUNT + 1))
+			MISSING_DOWNLOAD_BYTES=$((MISSING_DOWNLOAD_BYTES + PACKAGESIZECDN))
+			QueueDownloadPlanEntry "$APPNAME" "$PACKAGEURL" "$PACKAGESIZECDNMEG" "$BUILDTIMESTAMP"
 		fi
 	done
 }
@@ -498,6 +682,10 @@ DownloadPackage () {
 	SIZE="$3"
 	BUILDTIMESTAMP="$4"
 	PACKAGE=$(basename "$1")
+	PARTFILE="$PACKAGE.part"
+	if [ ! -f "$CACHEPATH/$PACKAGE" ] && [ ! -f "$CACHEPATH/$PARTFILE" ]; then
+		DOWNLOADED_FILES_LIST+=("$PARTFILE")
+	fi
 	HipChatNotify
 	SlackNotify
 	TeamsNotify
@@ -506,7 +694,12 @@ DownloadPackage () {
 	echo Package:     "$PACKAGE"
 	echo Size:        "$SIZE" MB
 	echo URL:         "$URL"
-	(cd "$CACHEPATH" && curl --progress-bar --remote-name --location $URL)
+	if ! (cd "$CACHEPATH" && curl "${CURL_ARGS_PROGRESS[@]}" --output "$PARTFILE" "$URL"); then
+		echo "Error: failed to download $PACKAGE from $URL" >&2
+		rm -f "$CACHEPATH/$PARTFILE"
+		return 1
+	fi
+	mv -f "$CACHEPATH/$PARTFILE" "$CACHEPATH/$PACKAGE"
 	SetPackageFileTimes "$PACKAGE" "$BUILDTIMESTAMP"
 }
 
@@ -571,42 +764,42 @@ else
 	do
 	case $KEY in
 		--Help|-h|--help)
-		ShowUsage
-		;;
+			ShowUsage
+			;;
 		--CachePath:*|-c:*|--cachepath:*)
-		CACHEPATH=${KEY#*:}
-		;;
+			CACHEPATH=${KEY#*:}
+			;;
 		--CheckInterval:*|-i:*|--checkinterval:*)
-		CHECKINTERVAL=${KEY#*:}
-		;;
+			CHECKINTERVAL=${KEY#*:}
+			;;
 		--CleanUp|-cu|--cleanup)
-		CLEANUP=true
-		;;
+			CLEANUP=true
+			;;
 		--HTTPOnly|-u|--httponly)
-		HTTPONLY=true
-		;;
+			HTTPONLY=true
+			;;
 		--NoPackages|-np|--nopackages)
-		NOPACKAGES=true
-		;;
+			NOPACKAGES=true
+			;;
 		--NoCollateral|-n|--nocollateral)
-		NOCOLLATERAL=true
-		;;
+			NOCOLLATERAL=true
+			;;
 		--ShowCollateral|-sc|--showcollateral)
-		ShowCollateral
-		;;
+			ShowCollateral
+			;;
 		--CopyCollateralFrom:*|-ccf:*|--copycollateralfrom:*)
-		COPYCOLLATERALFROM=${KEY#*:}
-		;;
+			COPYCOLLATERALFROM=${KEY#*:}
+			;;
 		--CopyCollateralTo:*|-cct:*|--copycollateralto:*)
-		COPYCOLLATERALTO=${KEY#*:}
-		CopyCollateral
-		;;
+			COPYCOLLATERALTO=${KEY#*:}
+			CopyCollateral
+			;;
 		--InsiderSupport|-is|--insidersupport)
-		INSIDER=true
-		;;
+			INSIDER=true
+			;;
 		*)
-		ShowUsage
-		;;
+			ShowUsage
+			;;
 	esac
 	done
 fi
@@ -618,15 +811,17 @@ do
 	InitializeScratchArea
 	# Verify that the cache area is ready to go
 	InitializeCacheArea
-	#Cleanup old cache and manifest files
-	CleanupOldFiles
+	# Initialize run metrics for capacity planning
+	InitializeRunMetrics
+	FREE_SPACE_START_BYTES=$(GetFreeSpaceBytes)
 	# Build channel array
 	CHANNELS[0]="$CHANNEL_COLLATERAL_PROD"
 	if [ "$INSIDER" = true ]; then
 		CHANNELS[1]="$CHANNEL_COLLATERAL_INSIDERSLOW"
 		CHANNELS[2]="$CHANNEL_COLLATERAL_INSIDERFAST"
 	fi
-	# Routine for all channels in the array
+
+	# Phase 1: Download collateral files and build a download plan for missing packages
 	for c in "${CHANNELS[@]}"
 	do
 		# Resolve collateral download URL
@@ -638,16 +833,64 @@ do
 		# Download collateral files for each application
 		DownloadCollateralFiles "${DOWNLOADARRAY[@]}"
 		# Build an array of all MAU-enabled applications
+		echo "Building application array for channel: $c ..."
 		BuildApplicationArray
-		# Build an array of each package location and download those packages
+		# Build an array of each package location and queue missing packages
 		for a in "${MAUAPP[@]}"
 		do
 			ArchiveCollateralFiles "$a"
-			if [ ! $NOPACKAGES ]; then
-				DownloadUpdatePackages "$a" "$c"
+			if [ "$NOPACKAGES" != true ]; then
+				APPNAME=$(GetAppNameFromMAUID "$a")
+				echo "Building package list and download plan for $APPNAME ..."
+				BuildPackageListFromManifest "$a"
+				BuildDownloadPlan "$APPNAME" "$CURRENT_PACKAGE_START_INDEX"
 			fi
 		done
 	done
+
+	# Phase 2: Count already cached packages before showing the summary
+	if [ "$NOPACKAGES" != true ]; then
+		CountExistingPackages
+	fi
+
+	# Show a summary and capacity plan before execution
+	ShowCapacitySummary
+
+	# Stop execution if space is insufficient for the planned downloads and cleanup
+	if [ "$FREE_SPACE_PROJECTED_BYTES" -lt 0 ]; then
+		echo "Error: Insufficient free space for planned downloads and cleanup."
+		echo "Please free up space in the cache folder or adjust the cleanup retention period."
+		exit 1
+	fi
+
+	# Phase 3: Check previously cached packages, refresh mtimes to avoid re-downloading, and remove corrupt files
+	if [ "$NOPACKAGES" != true ]; then
+		echo "Waiting 5 seconds before checking cached packages. Press Ctrl+C to cancel..."
+		sleep 5
+		echo "Checking cached packages for integrity..."
+		CheckCachedPackages
+	fi
+
+	# Phase 4: Cleanup outdated files according to the configured retention period, if specified
+	if [ "$CLEANUP" = true ]; then
+		# Wait 5 seconds before cleanup to allow user to cancel if needed
+		echo "Waiting 5 seconds before cleanup execution. Press Ctrl+C to cancel..."
+		sleep 5
+		echo "Starting cleanup of old files..."
+		CleanupOldFiles
+	fi
+	
+	# Phase 5: Download missing packages from the queued plan after cleanup
+	if [ "$NOPACKAGES" != true ]; then
+		echo "Waiting 5 seconds before download execution. Press Ctrl+C to cancel..."
+		sleep 5
+		echo "Starting download of missing packages..."
+		RunDownloadPlan
+	fi
+
+	echo "Run completed. Cleaning up temporary files..."
+	# Clean up temporary files in the scratch area
+	CleanupScratchArea
 
 	# If CheckInterval wasn't specified on the command-line, just run once
 	if [ "$CHECKINTERVAL" == '' ]; then
