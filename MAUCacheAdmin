@@ -1,8 +1,8 @@
 #!/bin/bash
-#set -x
+set -euo pipefail
 
 TOOL_NAME="Microsoft AutoUpdate Cache Admin"
-TOOL_VERSION="3.8"
+TOOL_VERSION="3.9"
 
 ## Copyright (c) 2023 Microsoft Corp. All rights reserved.
 ## Scripts are not supported under any Microsoft standard support program or service. The scripts are provided AS IS without warranty of any kind.
@@ -17,6 +17,16 @@ TOOL_VERSION="3.8"
 # Configure automatic cleanup of old data. Make sure to account for older versions you may want to continue hosting.
 CLEANUP=false
 CLEANUP_DAYS=90
+
+# Initialize optional runtime flags
+: "${CACHEPATH:=}"
+: "${CHECKINTERVAL:=}"
+: "${HTTPONLY:=false}"
+: "${NOPACKAGES:=false}"
+: "${NOCOLLATERAL:=false}"
+: "${INSIDER:=false}"
+: "${COPYCOLLATERALFROM:=}"
+: "${COPYCOLLATERALTO:=}"
 
 # Variables for HipChat Notifications
 : "${HIPCHAT_NOTIFY:=false}"
@@ -58,10 +68,56 @@ MAUID_COPILOT="0409MSCP10"
 CHANNEL_COLLATERAL_PROD="https://res.public.onecdn.static.microsoft/mro1cdnstorage/C1297A47-86C4-4C1F-97FA-950631F94777/MacAutoupdate/"
 CHANNEL_COLLATERAL_INSIDERSLOW="https://res.public.onecdn.static.microsoft/mro1cdnstorage/1ac37578-5a24-40fb-892e-b89d85b6dfaa/MacAutoupdate/"
 CHANNEL_COLLATERAL_INSIDERFAST="https://res.public.onecdn.static.microsoft/mro1cdnstorage/4B2D7701-0A4F-49C8-B4CB-0C2D4043F51F/MacAutoupdate/"
-SCRATCH_AREA="$TMPDIR""MAUCache"
+SCRATCH_BASEDIR="${TMPDIR:-/tmp}"
+SCRATCH_AREA="$SCRATCH_BASEDIR/MAUCache"
 
 # Platform detection
 PLATFORM=$(uname -s)
+
+# Define various output colors
+cecho () {
+  local _color=$1; shift
+  if tty -s
+  then
+    echo -e "$(tput setaf $_color)$@$(tput sgr0)"
+  else
+    echo "$@"
+  fi
+}
+black=0; red=1; green=2; yellow=3; blue=4; pink=5; cyan=6; white=7;
+
+UseProgressBar () {
+  if tty -s; then
+    return 0
+  fi
+  return 1
+}
+
+CURL_ARGS=(--fail --show-error --location --silent)
+CURL_ARGS_PROGRESS=(--fail --show-error --location)
+if UseProgressBar; then
+  CURL_ARGS_PROGRESS+=(--progress-bar)
+else
+  CURL_ARGS_PROGRESS+=(--silent)
+fi
+
+CleanupOnInterrupt () {
+# Cleans up temporary state when the script is interrupted
+	echo
+	echo "Interrupted by user. Cleaning up temporary files..."
+	if [ -d "$SCRATCH_AREA" ]; then
+		rm -rf "$SCRATCH_AREA" 2>/dev/null
+	fi
+	for DOWNLOADED_FILE in "${DOWNLOADED_FILES_LIST[@]}"
+	do
+		[ -n "$DOWNLOADED_FILE" ] && rm -f "$CACHEPATH/$DOWNLOADED_FILE" 2>/dev/null
+	done
+	exit 130
+}
+
+trap CleanupOnInterrupt INT TERM
+set -o errtrace
+trap 'echo "Script error near line $LINENO: $BASH_COMMAND" >&2' ERR
 
 ShowUsage () {
 # Shows tool usage and parameters
@@ -77,6 +133,7 @@ ShowUsage () {
 
 InitializeScratchArea () {
 # Creates and cleans temporary file area
+	echo "Initializing scratch area: $SCRATCH_AREA"
 	if [ -d "$SCRATCH_AREA" ]; then
 		rm -i -f "$SCRATCH_AREA""*"
 	else
@@ -95,28 +152,28 @@ InitializeCacheArea () {
 
 CleanupOldFiles () {
 # Cleanup old cache and manifest files
-	if [ $CLEANUP = true ]; then
+	if [ "$CLEANUP" = true ]; then
 		echo "Touching legacy packages needed for older macOS versions to avoid re-download..."
-		touch "$CACHEPATH/Microsoft_AutoUpdate_4.40.21101001_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_Excel_16.30.19101301_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_Excel_16.43.20110804_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_Excel_16.54.21101001_Updater.pkg"		
-		touch "$CACHEPATH/Microsoft_OneNote_16.30.19101301_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_OneNote_16.43.20110804_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_OneNote_16.54.21101001_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_Outlook_16.30.19101301_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_Outlook_16.43.20110804_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_Outlook_16.54.21101001_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_PowerPoint_16.30.19101301_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_PowerPoint_16.43.20110804_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_PowerPoint_16.54.21101001_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_Remote_Desktop_10.1.8_updater.pkg"
-		touch "$CACHEPATH/Microsoft_Remote_Desktop_10.2.13_updater.pkg"
-		touch "$CACHEPATH/Microsoft_Remote_Desktop_10.3.12_updater.pkg"
-		touch "$CACHEPATH/Microsoft_Remote_Desktop_10.5.2_updater.pkg"
-		touch "$CACHEPATH/Microsoft_Word_16.30.19101301_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_Word_16.43.20110804_Updater.pkg"
-		touch "$CACHEPATH/Microsoft_Word_16.54.21101001_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_AutoUpdate_4.40.21101001_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Excel_16.30.19101301_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Excel_16.43.20110804_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Excel_16.54.21101001_Updater.pkg"		
+		touch -c -m "$CACHEPATH/Microsoft_OneNote_16.30.19101301_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_OneNote_16.43.20110804_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_OneNote_16.54.21101001_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Outlook_16.30.19101301_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Outlook_16.43.20110804_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Outlook_16.54.21101001_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_PowerPoint_16.30.19101301_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_PowerPoint_16.43.20110804_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_PowerPoint_16.54.21101001_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Remote_Desktop_10.1.8_updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Remote_Desktop_10.2.13_updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Remote_Desktop_10.3.12_updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Remote_Desktop_10.5.2_updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Word_16.30.19101301_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Word_16.43.20110804_Updater.pkg"
+		touch -c -m "$CACHEPATH/Microsoft_Word_16.54.21101001_Updater.pkg"
 		echo "Removing old files not modified within $CLEANUP_DAYS days..."
 		find "$CACHEPATH" -type f -mtime +"$CLEANUP_DAYS" -print -delete
 	fi
@@ -124,7 +181,7 @@ CleanupOldFiles () {
 
 ResolveDownloadUrl () {
 # Selects either HTTPS from the Office CDN origin, or HTTP directly from Akamai
-	if [ "$HTTPONLY" ]; then
+	if [ "$HTTPONLY" = true ]; then
 		HTTPURL=(${1/https/http})
 		FILEURL=(${HTTPURL/officecdnmac.microsoft.com/officecdn-microsoft-com.akamaized.net})
 	else
@@ -184,28 +241,43 @@ DownloadCollateralFiles () {
 	for i in "$@"
 	do
 		echo Downloading collateral file: "$i"
-		(cd "$SCRATCH_AREA" && curl --progress-bar --remote-name --location "$i.{xml,cat}" && curl --progress-bar --remote-name --location "$i-chk.xml")
+		if ! curl "${CURL_ARGS[@]}" --output "$SCRATCH_AREA/$(basename "$i.xml")" "$i.xml"; then
+			cecho "$yellow" "Warning: failed to download $i.xml" >&2
+		fi
+		if ! curl "${CURL_ARGS[@]}" --output "$SCRATCH_AREA/$(basename "$i.cat")" "$i.cat"; then
+			cecho "$yellow" "Warning: failed to download $i.cat" >&2
+		fi
+		if ! curl "${CURL_ARGS[@]}" --output "$SCRATCH_AREA/$(basename "$i-chk.xml")" "$i-chk.xml"; then
+			cecho "$yellow" "Warning: failed to download $i-chk.xml" >&2
+		fi
 	done
 }
 
 DownloadProductionBuildSource () {
 # Downloads list of official production builds
 	local CHANNELURL="$1"
-	(cd "$SCRATCH_AREA" && curl --progress-bar --remote-name --location "$CHANNELURL""builds.txt")
-	IFS=$'\n' read -d '' -r -a PRODBUILDS < "$SCRATCH_AREA""/builds.txt"
+	local BUILDSFILE="$SCRATCH_AREA/builds.txt"
+	PRODBUILDS=()
+	if ! curl "${CURL_ARGS[@]}" --output "$SCRATCH_AREA/builds.txt" "${CHANNELURL}builds.txt"; then
+		echo "$(cecho "$yellow" "Warning: failed to download build list from ${CHANNELURL}builds.txt; continuing without delta filtering")" >&2
+		PRODBUILDS=()
+		return 0
+	fi
+	IFS=$'\n' read -d '' -r -a PRODBUILDS < "$BUILDSFILE"
 	if [[ "$PRODBUILDS[0]" == "1"* ]]; then
-		return
+		return 0
 	else
-		PRODBUILDS=""
+		PRODBUILDS=()
+		return 0
 	fi
 }
 
 ArchiveCollateralFiles () {
 # Archives collateral files in the cache folder
 	local APPID="$1"
-	if [ $NOCOLLATERAL ]; then
-		return
-	else
+	if [ "$NOCOLLATERAL" = true ]; then
+		return 0
+	fi
 		if [ ! -d "$CACHEPATH/collateral" ]; then
 			mkdir "$CACHEPATH/collateral"
 		fi
@@ -213,12 +285,17 @@ ArchiveCollateralFiles () {
 		if [ ! -d "$CACHEPATH/collateral/$APPVER" ]; then
 			mkdir "$CACHEPATH/collateral/$APPVER"
 		fi
-		cp "$SCRATCH_AREA/$APPID-chk.xml" "$CACHEPATH/collateral/$APPVER"
-		cp "$SCRATCH_AREA/$APPID.xml" "$CACHEPATH/collateral/$APPVER"
-		cp "$SCRATCH_AREA/$APPID.cat" "$CACHEPATH/collateral/$APPVER"
+	for REQUIRED_FILE in "$APPID-chk.xml" "$APPID.xml" "$APPID.cat"; do
+		if [ ! -f "$SCRATCH_AREA/$REQUIRED_FILE" ]; then
+			cecho "$yellow" "Warning: missing collateral file $REQUIRED_FILE for $APPID; skipping archive" >&2
+			continue
+		fi
+		cp "$SCRATCH_AREA/$REQUIRED_FILE" "$CACHEPATH/collateral/$APPVER"
+	done
+	if [ -f "$CACHEPATH/collateral/$APPVER/$APPID-chk.xml" ]; then
 		# Disable versioned manifests
 		# NOTE: The following command will only work on macOS
-		/usr/libexec/PlistBuddy -c "Set :VersionedManifests bool false" "$CACHEPATH/collateral/$APPVER/$APPID-chk.xml" >/dev/null 2>&1;
+		/usr/libexec/PlistBuddy -c "Set :VersionedManifests bool false" "$CACHEPATH/collateral/$APPVER/$APPID-chk.xml" >/dev/null 2>&1 || true
 	fi
 }
 
@@ -236,6 +313,7 @@ DownloadUpdatePackages () {
 		SKIPDOWNLOAD=false
 		PACKAGENAME=$(basename "$i")
 		if [[ $PACKAGENAME == *"Delta"* ]]; then
+			if [ "${#PRODBUILDS[@]}" -gt 0 ]; then
 			for PRODVER in "${PRODBUILDS[@]}"
 			do
 				if [[ $PACKAGENAME == *"$PRODVER""_to_"* ]]; then
@@ -245,6 +323,9 @@ DownloadUpdatePackages () {
 					SKIPDOWNLOAD=true
 				fi
 			done
+			else
+				SKIPDOWNLOAD=false
+			fi
 		fi
 		if [ "$SKIPDOWNLOAD" == false ]; then
 			PACKAGEURL=$(ResolveDownloadUrl "$i")
@@ -273,8 +354,9 @@ DownloadUpdatePackages () {
 GetAppVersionFromXML () {
 # Returns the current app version from the XML collateral
 	XML="$1"".xml"
-	local APPVER=($(cd $SCRATCH_AREA && grep -A1 -m2 'Update Version' "$XML" | grep 'string' | sed -e 's,.*<string>\([^<]*\)</string>.*,\1,g'))
-	if [ "$APPVER" == '' ]; then
+	local APPVER
+	APPVER=$(cd "$SCRATCH_AREA" 2>/dev/null && grep -A1 -m2 'Update Version' "$XML" 2>/dev/null | grep 'string' 2>/dev/null | sed -e 's,.*<string>\([^<]*\)</string>.*,\1,g' | tail -1 || true)
+	if [ -z "$APPVER" ]; then
 		echo "Legacy"
 	else
 		echo "$APPVER"
@@ -284,7 +366,8 @@ GetAppVersionFromXML () {
 GetBuildTimestampFromXML () {
 # Returns the build timestamp from the XML collateral in UTC ISO 8601 format
 	XML="$1"".xml"
-	local BUILDTIMESTAMP=($(cd "$SCRATCH_AREA" && grep -A1 'Date' "$XML" | grep 'date' | sed -e 's,.*<date>\([^<]*\)</date>.*,\1,g' | tail -1))
+	local BUILDTIMESTAMP
+	BUILDTIMESTAMP=$(cd "$SCRATCH_AREA" 2>/dev/null && grep -A1 'Date' "$XML" 2>/dev/null | grep 'date' 2>/dev/null | sed -e 's,.*<date>\([^<]*\)</date>.*,\1,g' | tail -1 || true)
 	echo "$BUILDTIMESTAMP"
 }
 
@@ -362,9 +445,14 @@ GetAppNameFromMAUID () {
 GetDownloadSize () {
 # Gets the size of a file based on its header, then strips non-numeric characters
 	URL="$1"
-	local CONTENTHTTPLENGTH=$(curl --head -s $URL | grep -i 'Content-Length:' | cut -d ' ' -f2)
-	CONTENTLENGTH=$(echo ${CONTENTHTTPLENGTH//[!0-9]/})
-	echo $CONTENTLENGTH
+	local CONTENTHTTPLENGTH
+	CONTENTHTTPLENGTH=$(curl --head -s --retry 2 --retry-delay 1 --connect-timeout 10 "$URL" 2>/dev/null | grep -i 'Content-Length:' | tail -1 | cut -d ' ' -f2 || true)
+	CONTENTLENGTH=$(echo "${CONTENTHTTPLENGTH//[!0-9]/}")
+	if [ -z "$CONTENTLENGTH" ]; then
+		echo 0
+		return 0
+	fi
+	echo "$CONTENTLENGTH"
 }
 
 GetLocalSize () {
@@ -381,7 +469,7 @@ GetLocalSize () {
 
 HipChatNotify () {
 # Send Alert to HipChat Room Specified in Global Variable when Package is Downloaded
-	if [ $HIPCHAT_NOTIFY == true ]; then
+	if [ "$HIPCHAT_NOTIFY" = true ]; then
 		echo "New Package Detected: $PACKAGE"
 		curl -v -k -d "room_id=${HIPCHAT_ROOM_ID}&from=ServerAlert&message=""<b>MAU Server Alert</b> - New Package Downloaded:<b> ${PACKAGE}</b>""&color=purple" ${HIPCHAT_NOTIFY_ADDRESS}/message?auth_token=${HIPCHAT_AUTH_TOKEN}&format=json
 	fi
@@ -389,7 +477,7 @@ HipChatNotify () {
 
 SlackNotify () {
 # Send Alert to Slack Webhook in Global Variable when Package is Downloaded
-	if [ $SLACK_NOTIFY == true ]; then
+	if [ "$SLACK_NOTIFY" = true ]; then
 		echo "New Package Detected: $PACKAGE"
 		curl -X POST -H 'Content-type: application/json' --data '{"username":"MAUCacheAdmin","icon_url":"'"$SLACK_ICON_URL"'","text":"New Package Downloaded: '"$PACKAGE"'"}' $SLACK_WEBHOOK_URL
 	fi
@@ -397,7 +485,7 @@ SlackNotify () {
 
 TeamsNotify () {
 # Send Alert to Teams Webhook in Global Variable when Package is Downloaded
-	if [ $TEAMS_NOTIFY == true ]; then
+	if [ "$TEAMS_NOTIFY" = true ]; then
 		echo "New Package Detected: $PACKAGE"
 		curl -H 'Content-type: application/json' -d '{"text":"New Package Downloaded: '"$PACKAGE"'"}' $TEAMS_WEBHOOK_URL
 	fi
@@ -484,54 +572,42 @@ else
 	case $KEY in
 		--Help|-h|--help)
 		ShowUsage
-		shift # past argument
 		;;
 		--CachePath:*|-c:*|--cachepath:*)
 		CACHEPATH=${KEY#*:}
-		shift # past argument
 		;;
 		--CheckInterval:*|-i:*|--checkinterval:*)
 		CHECKINTERVAL=${KEY#*:}
-		shift # past argument
 		;;
 		--CleanUp|-cu|--cleanup)
 		CLEANUP=true
-		shift # past argument
 		;;
 		--HTTPOnly|-u|--httponly)
 		HTTPONLY=true
-		shift # past argument
 		;;
 		--NoPackages|-np|--nopackages)
 		NOPACKAGES=true
-		shift # past argument
 		;;
 		--NoCollateral|-n|--nocollateral)
 		NOCOLLATERAL=true
-		shift # past argument
 		;;
 		--ShowCollateral|-sc|--showcollateral)
 		ShowCollateral
-		shift # past argument
 		;;
 		--CopyCollateralFrom:*|-ccf:*|--copycollateralfrom:*)
 		COPYCOLLATERALFROM=${KEY#*:}
-		shift # past argument
 		;;
 		--CopyCollateralTo:*|-cct:*|--copycollateralto:*)
 		COPYCOLLATERALTO=${KEY#*:}
 		CopyCollateral
-		shift # past argument
 		;;
 		--InsiderSupport|-is|--insidersupport)
 		INSIDER=true
-		shift # past argument
 		;;
 		*)
 		ShowUsage
 		;;
 	esac
-	shift # past argument or value
 	done
 fi
 
@@ -546,7 +622,7 @@ do
 	CleanupOldFiles
 	# Build channel array
 	CHANNELS[0]="$CHANNEL_COLLATERAL_PROD"
-	if [ $INSIDER ]; then
+	if [ "$INSIDER" = true ]; then
 		CHANNELS[1]="$CHANNEL_COLLATERAL_INSIDERSLOW"
 		CHANNELS[2]="$CHANNEL_COLLATERAL_INSIDERFAST"
 	fi
