@@ -70,6 +70,7 @@ CHANNEL_COLLATERAL_INSIDERSLOW="https://res.public.onecdn.static.microsoft/mro1c
 CHANNEL_COLLATERAL_INSIDERFAST="https://res.public.onecdn.static.microsoft/mro1cdnstorage/4B2D7701-0A4F-49C8-B4CB-0C2D4043F51F/MacAutoupdate/"
 SCRATCH_BASEDIR="${TMPDIR:-/tmp}"
 SCRATCH_AREA="$SCRATCH_BASEDIR/MAUCache"
+DOWNLOADED_FILES_LIST=()
 
 # Platform detection
 PLATFORM=$(uname -s)
@@ -101,13 +102,18 @@ else
   CURL_ARGS_PROGRESS+=(--silent)
 fi
 
+CleanupScratchArea () {
+# Removes the temporary scratch area created for this run
+	if [ -d "$SCRATCH_AREA" ]; then
+		rm -rf "$SCRATCH_AREA" 2>/dev/null
+	fi
+}
+
 CleanupOnInterrupt () {
 # Cleans up temporary state when the script is interrupted
 	echo
 	echo "Interrupted by user. Cleaning up temporary files..."
-	if [ -d "$SCRATCH_AREA" ]; then
-		rm -rf "$SCRATCH_AREA" 2>/dev/null
-	fi
+	CleanupScratchArea
 	for DOWNLOADED_FILE in "${DOWNLOADED_FILES_LIST[@]}"
 	do
 		[ -n "$DOWNLOADED_FILE" ] && rm -f "$CACHEPATH/$DOWNLOADED_FILE" 2>/dev/null
@@ -260,6 +266,7 @@ ShowCapacitySummary () {
 	echo "Free space now:        $(FormatBytesToGB "$FREE_SPACE_CURRENT_BYTES") GiB"
 	echo "Projected free space:  $(FormatBytesToGB "$FREE_SPACE_PROJECTED_BYTES") GiB"
 	echo "----------------------------------------------------------------------------------------"
+	echo
 }
 
 CleanupOldFiles () {
@@ -847,6 +854,8 @@ do
 			fi
 		done
 	done
+	cecho $green "Building the download plan completed."
+	echo
 
 	# Phase 2: Count already cached packages before showing the summary
 	if [ "$NOPACKAGES" != true ]; then
@@ -858,34 +867,51 @@ do
 
 	# Stop execution if space is insufficient for the planned downloads and cleanup
 	if [ "$FREE_SPACE_PROJECTED_BYTES" -lt 0 ]; then
-		echo "Error: Insufficient free space for planned downloads and cleanup."
-		echo "Please free up space in the cache folder or adjust the cleanup retention period."
+		cecho $RED "Error: Insufficient free space for planned downloads and cleanup."
+		cecho $RED "Please free up space in the cache folder or adjust the cleanup retention period."
 		exit 1
 	fi
 
 	# Phase 3: Check previously cached packages, refresh mtimes to avoid re-downloading, and remove corrupt files
 	if [ "$NOPACKAGES" != true ]; then
-		echo "Waiting 5 seconds before checking cached packages. Press Ctrl+C to cancel..."
+		echo "Checking previously cached packages for validity and integrity:"
+		echo "  This will refresh timestamps for valid packages and remove corrupt ones."
+		echo "  Waiting 5 seconds before continuing. Press Ctrl+C to cancel..."
 		sleep 5
-		echo "Checking cached packages for integrity..."
+
 		CheckCachedPackages
+
+		cecho $green "Checking cached packages completed."
+		echo "----------------------------------------------------------------------------------------"
+		echo
 	fi
 
 	# Phase 4: Cleanup outdated files according to the configured retention period, if specified
 	if [ "$CLEANUP" = true ]; then
-		# Wait 5 seconds before cleanup to allow user to cancel if needed
-		echo "Waiting 5 seconds before cleanup execution. Press Ctrl+C to cancel..."
+		echo "Cleanup of old files is enabled. Files older than $CLEANUP_DAYS days will be removed."
+		echo "  Waiting 5 seconds before cleanup execution. Press Ctrl+C to cancel..."
 		sleep 5
-		echo "Starting cleanup of old files..."
+		
 		CleanupOldFiles
+
+		cecho $green "Cleanup of old files completed."
+		echo "----------------------------------------------------------------------------------------"
+		echo
 	fi
 	
 	# Phase 5: Download missing packages from the queued plan after cleanup
 	if [ "$NOPACKAGES" != true ]; then
-		echo "Waiting 5 seconds before download execution. Press Ctrl+C to cancel..."
+		echo "Starting download of missing packages."
+		echo "  Total files to download: $MISSING_DOWNLOAD_COUNT"
+		echo "  Total size to download:  $(FormatBytesToGB "$MISSING_DOWNLOAD_BYTES") GiB"
+		echo "  Waiting 5 seconds before download execution. Press Ctrl+C to cancel..."
 		sleep 5
-		echo "Starting download of missing packages..."
+
 		RunDownloadPlan
+
+		cecho $green "Download of missing packages completed."
+		echo "----------------------------------------------------------------------------------------"
+		echo
 	fi
 
 	echo "Run completed. Cleaning up temporary files..."
