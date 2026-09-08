@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TOOL_NAME="Microsoft AutoUpdate Cache Admin"
-TOOL_VERSION="3.11"
+TOOL_VERSION="3.12"
 
 ## Copyright (c) 2023 Microsoft Corp. All rights reserved.
 ## Scripts are not supported under any Microsoft standard support program or service. The scripts are provided AS IS without warranty of any kind.
@@ -22,7 +22,6 @@ CLEANUP_PERCENT=20
 # Initialize optional runtime flags
 : "${CACHEPATH:=}"
 : "${CHECKINTERVAL:=}"
-: "${HTTPONLY:=false}"
 : "${NOPACKAGES:=false}"
 : "${NOCOLLATERAL:=false}"
 : "${INSIDER:=false}"
@@ -55,25 +54,50 @@ DebugLog () {
 ############################################################################################################
 
 # Constants
-MAUID_MAU4X="0409MSau04"
-MAUID_WORD2019="0409MSWD2019"
-MAUID_EXCEL2019="0409XCEL2019"
-MAUID_POWERPOINT2019="0409PPT32019"
-MAUID_OUTLOOK2019="0409OPIM2019"
-MAUID_ONENOTE2019="0409ONMC2019"
-MAUID_SKYPE2016="0409MSFB16"
-MAUID_INTUNECP="0409IMCP01"
-MAUID_REMOTEDESKTOP10="0409MSRD10"
-MAUID_ONEDRIVE="0409ONDR18"
-MAUID_DEFENDER="0409WDAV00"
-MAUID_DEFENDER_SHIM="0409WDAVSHIM"
-MAUID_DEFENDER_CONSUMERS="0409WDAVCONSUMER"
-MAUID_EDGE="0409EDGE01"
-MAUID_TEAMS2="0409TEAMS21"
-MAUID_OFFICELICHELPER="0409OLIC02"
-MAUID_REMOTEHELP="0409MSRH01"
-MAUID_QUICKASSIST="0409MSQA01"
-MAUID_COPILOT="0409MSCP10"
+MAU_PREFIX="0409"
+MAUAPP_IDS=(
+	"MSau04"
+	"MSWD2019"
+	"XCEL2019"
+	"PPT32019"
+	"OPIM2019"
+	"ONMC2019"
+	"MSFB16"
+	"IMCP01"
+	"MSRD10"
+	"ONDR18"
+	"WDAV00"
+	"WDAVSHIM"
+	"WDAVCONSUMER"
+	"EDGE01"
+	"TEAMS21"
+	"OLIC02"
+	"MSRH01"
+	"MSQA01"
+	"MSCP10"
+)
+
+declare -A MAU_APP_NAMES=(
+	[MSau04]="MAU 4.x"
+	[MSWD2019]="Word 365/2024/2021"
+	[XCEL2019]="Excel 365/2024/2021"
+	[PPT32019]="PowerPoint 365/2024/2021"
+	[OPIM2019]="Outlook 365/2024/2021"
+	[ONMC2019]="OneNote 365/2024/2021"
+	[MSFB16]="Skype for Business"
+	[IMCP01]="Intune Company Portal"
+	[MSRD10]="Windows App"
+	[ONDR18]="OneDrive"
+	[WDAV00]="Defender for Endpoint"
+	[WDAVSHIM]="Defender Shim"
+	[WDAVCONSUMER]="Defender Consumers"
+	[EDGE01]="Edge"
+	[TEAMS21]="Teams 2.1"
+	[OLIC02]="Office Licensing Helper"
+	[MSRH01]="Remote Help"
+	[MSQA01]="Quick Assist"
+	[MSCP10]="Microsoft Copilot"
+)
 CHANNEL_COLLATERAL_PROD="https://res.public.onecdn.static.microsoft/mro1cdnstorage/C1297A47-86C4-4C1F-97FA-950631F94777/MacAutoupdate/"
 CHANNEL_COLLATERAL_INSIDERSLOW="https://res.public.onecdn.static.microsoft/mro1cdnstorage/1ac37578-5a24-40fb-892e-b89d85b6dfaa/MacAutoupdate/"
 CHANNEL_COLLATERAL_INSIDERFAST="https://res.public.onecdn.static.microsoft/mro1cdnstorage/4B2D7701-0A4F-49C8-B4CB-0C2D4043F51F/MacAutoupdate/"
@@ -138,7 +162,7 @@ ShowUsage () {
 # Shows tool usage and parameters
 	echo $TOOL_NAME - $TOOL_VERSION
 	echo "Purpose: Downloads MAU collateral and packages from the Office CDN to a local web server"
-	echo "Usage: MAUCacheAdmin --CachePath:<path> [--CheckInterval:<minutes>] [--CleanUp] [--HTTPOnly] [--NoPackages] [--NoCollateral] [--Verbose] [--ShowCollateral] [--CopyCollateralFrom:<from Folder>] [--CopyCollateralTo:<to Folder>] [--InsiderSupport]"
+	echo "Usage: MAUCacheAdmin --CachePath:<path> [--CheckInterval:<minutes>] [--CleanUp] [--NoPackages] [--NoCollateral] [--Verbose] [--ShowCollateral] [--CopyCollateralFrom:<from Folder>] [--CopyCollateralTo:<to Folder>] [--InsiderSupport]"
 	echo "Example: MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --CheckInterval:60"
 	echo "Example: MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --CleanUp --Verbose"
 	echo "Example: MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --ShowCollateral"
@@ -502,87 +526,25 @@ ShowCapacitySummary () {
 CleanupOldFiles () {
 # Cleanup old cache and manifest files
 	if [ "$CLEANUP" = true ]; then
-		echo "Touching legacy packages needed for older macOS versions to avoid re-download..."
-		touch -c -m "$CACHEPATH/Microsoft_AutoUpdate_4.40.21101001_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Excel_16.30.19101301_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Excel_16.43.20110804_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Excel_16.54.21101001_Updater.pkg"		
-		touch -c -m "$CACHEPATH/Microsoft_OneNote_16.30.19101301_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_OneNote_16.43.20110804_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_OneNote_16.54.21101001_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Outlook_16.30.19101301_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Outlook_16.43.20110804_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Outlook_16.54.21101001_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_PowerPoint_16.30.19101301_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_PowerPoint_16.43.20110804_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_PowerPoint_16.54.21101001_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Remote_Desktop_10.1.8_updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Remote_Desktop_10.2.13_updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Remote_Desktop_10.3.12_updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Remote_Desktop_10.5.2_updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Word_16.30.19101301_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Word_16.43.20110804_Updater.pkg"
-		touch -c -m "$CACHEPATH/Microsoft_Word_16.54.21101001_Updater.pkg"
 		echo "Removing old files not modified within $CLEANUP_DAYS days..."
 		find "$CACHEPATH" -type f -mtime +"$CLEANUP_DAYS" -print -delete
 	fi
 }
 
-ResolveDownloadUrl () {
-# Selects either HTTPS from the Office CDN origin, or HTTP directly from Akamai
-	if [ "$HTTPONLY" = true ]; then
-		HTTPURL=(${1/https/http})
-		FILEURL=(${HTTPURL/officecdnmac.microsoft.com/officecdn-microsoft-com.akamaized.net})
-	else
-		FILEURL="$1"
-	fi
-	echo "$FILEURL"
-}
-
 BuildApplicationArray () {
 # Builds an array of all the MAU-enabled applications that we care about
-	MAUAPP[0]="$MAUID_MAU4X"
-	MAUAPP[1]="$MAUID_WORD2019"
-	MAUAPP[2]="$MAUID_EXCEL2019"
-	MAUAPP[3]="$MAUID_POWERPOINT2019"
-	MAUAPP[4]="$MAUID_OUTLOOK2019"
-	MAUAPP[5]="$MAUID_ONENOTE2019"
-	MAUAPP[6]="$MAUID_SKYPE2016"
-	MAUAPP[7]="$MAUID_INTUNECP"
-	MAUAPP[8]="$MAUID_REMOTEDESKTOP10"
-	MAUAPP[9]="$MAUID_ONEDRIVE"
-	MAUAPP[10]="$MAUID_DEFENDER"
-	MAUAPP[11]="$MAUID_DEFENDER_SHIM"
-	MAUAPP[12]="$MAUID_DEFENDER_CONSUMERS"
-	MAUAPP[13]="$MAUID_EDGE"
-	MAUAPP[14]="$MAUID_TEAMS2"
-	MAUAPP[15]="$MAUID_OFFICELICHELPER"
-	MAUAPP[16]="$MAUID_REMOTEHELP"
-	MAUAPP[17]="$MAUID_QUICKASSIST"
-	MAUAPP[18]="$MAUID_COPILOT"
+	MAUAPP=()
+	for APPID in "${MAUAPP_IDS[@]}"; do
+		MAUAPP+=("${MAU_PREFIX}${APPID}")
+	done
 }
 
 BuildCollateralArray () {
 # Builds an array of MAU collateral file-paths which we'll use later for downloading XML and CAT files
-	DOWNLOADARRAY[0]="$1"$MAUID_MAU4X
-	DOWNLOADARRAY[1]="$1"$MAUID_WORD2019
-	DOWNLOADARRAY[2]="$1"$MAUID_EXCEL2019
-	DOWNLOADARRAY[3]="$1"$MAUID_POWERPOINT2019
-	DOWNLOADARRAY[4]="$1"$MAUID_OUTLOOK2019
-	DOWNLOADARRAY[5]="$1"$MAUID_ONENOTE2019
-	DOWNLOADARRAY[6]="$1"$MAUID_SKYPE2016
-	DOWNLOADARRAY[7]="$1"$MAUID_INTUNECP
-	DOWNLOADARRAY[8]="$1"$MAUID_REMOTEDESKTOP10
-	DOWNLOADARRAY[9]="$1"$MAUID_ONEDRIVE
-	DOWNLOADARRAY[10]="$1"$MAUID_DEFENDER
-	DOWNLOADARRAY[11]="$1"$MAUID_DEFENDER_SHIM
-	DOWNLOADARRAY[12]="$1"$MAUID_DEFENDER_CONSUMERS
-	DOWNLOADARRAY[13]="$1"$MAUID_EDGE
-	DOWNLOADARRAY[14]="$1"$MAUID_TEAMS2
-	DOWNLOADARRAY[15]="$1"$MAUID_OFFICELICHELPER
-	DOWNLOADARRAY[16]="$1"$MAUID_REMOTEHELP
-	DOWNLOADARRAY[17]="$1"$MAUID_QUICKASSIST
-	DOWNLOADARRAY[18]="$1"$MAUID_COPILOT
+	DOWNLOADARRAY=()
+	for APPID in "${MAUAPP_IDS[@]}"; do
+		DOWNLOADARRAY+=("$1${MAU_PREFIX}${APPID}")
+	done
 }
 
 DownloadCollateralFiles () {
@@ -600,25 +562,6 @@ DownloadCollateralFiles () {
 			cecho "$yellow" "Warning: failed to download $i-chk.xml" >&2
 		fi
 	done
-}
-
-DownloadProductionBuildSource () {
-# Downloads list of official production builds
-	local CHANNELURL="$1"
-	local BUILDSFILE="$SCRATCH_AREA/builds.txt"
-	PRODBUILDS=()
-	if ! curl "${CURL_ARGS[@]}" --output "$SCRATCH_AREA/builds.txt" "${CHANNELURL}builds.txt"; then
-		echo "$(cecho "$yellow" "Warning: failed to download build list from ${CHANNELURL}builds.txt; continuing without delta filtering")" >&2
-		PRODBUILDS=()
-		return 0
-	fi
-	IFS=$'\n' read -d '' -r -a PRODBUILDS < "$BUILDSFILE"
-	if [[ "$PRODBUILDS[0]" == "1"* ]]; then
-		return 0
-	else
-		PRODBUILDS=()
-		return 0
-	fi
 }
 
 ArchiveCollateralFiles () {
@@ -652,7 +595,7 @@ BuildPackageListFromManifest () {
 # Identifies active packages for an app and appends them to the shared in-memory package list
 	APPID="$1"
 	CURRENT_PACKAGE_START_INDEX=$PACKAGE_COUNT
-	APPNAME=$(GetAppNameFromMAUID "$APPID")
+	APPNAME="${MAU_APP_NAMES[${APPID#${MAU_PREFIX}}]:-${APPID#${MAU_PREFIX}}}"
 	LOCATION=()
 	MANIFEST_FILE="$SCRATCH_AREA/$APPID.xml"
 	if [ ! -f "$MANIFEST_FILE" ]; then
@@ -671,41 +614,22 @@ BuildPackageListFromManifest () {
 
 	for i in "${LOCATION[@]}"
 	do
-		SKIPDOWNLOAD=false
 		PACKAGENAME=$(basename "$i")
-		if [[ $PACKAGENAME == *"Delta"* ]]; then
-			if [ "${#PRODBUILDS[@]}" -gt 0 ]; then
-				for PRODVER in "${PRODBUILDS[@]}"
-				do
-					if [[ $PACKAGENAME == *"$PRODVER""_to_"* ]]; then
-						SKIPDOWNLOAD=false
-						break
-					else
-						SKIPDOWNLOAD=true
-					fi
-				done
-			else
-				SKIPDOWNLOAD=false
-			fi
+		PACKAGEURL="$i"
+		PACKAGESIZECDN=$(GetDownloadSize "$i")
+		if [[ "$PACKAGESIZECDN" =~ ^[0-9]+$ ]]; then
+			PACKAGESIZECDNMEG=$((PACKAGESIZECDN / 1024 / 1024))
+		else
+			PACKAGESIZECDNMEG=0
 		fi
 
-		if [ "$SKIPDOWNLOAD" == false ]; then
-			PACKAGEURL=$(ResolveDownloadUrl "$i")
-			PACKAGESIZECDN=$(GetDownloadSize "$i")
-			if [[ "$PACKAGESIZECDN" =~ ^[0-9]+$ ]]; then
-				PACKAGESIZECDNMEG=$((PACKAGESIZECDN / 1024 / 1024))
-			else
-				PACKAGESIZECDNMEG=0
-			fi
-
-			PACKAGE_NAME_LIST[$PACKAGE_COUNT]="$PACKAGENAME"
-			PACKAGE_URL_LIST[$PACKAGE_COUNT]="$PACKAGEURL"
-			PACKAGE_SIZE_LIST[$PACKAGE_COUNT]="$PACKAGESIZECDN"
-			PACKAGE_SIZE_MEG_LIST[$PACKAGE_COUNT]="$PACKAGESIZECDNMEG"
-			PACKAGE_TIMESTAMP_LIST[$PACKAGE_COUNT]="$BUILDTIMESTAMP"
-			PACKAGE_APPNAME_LIST[$PACKAGE_COUNT]="$APPNAME"
-			PACKAGE_COUNT=$((PACKAGE_COUNT + 1))
-		fi
+		PACKAGE_NAME_LIST[$PACKAGE_COUNT]="$PACKAGENAME"
+		PACKAGE_URL_LIST[$PACKAGE_COUNT]="$PACKAGEURL"
+		PACKAGE_SIZE_LIST[$PACKAGE_COUNT]="$PACKAGESIZECDN"
+		PACKAGE_SIZE_MEG_LIST[$PACKAGE_COUNT]="$PACKAGESIZECDNMEG"
+		PACKAGE_TIMESTAMP_LIST[$PACKAGE_COUNT]="$BUILDTIMESTAMP"
+		PACKAGE_APPNAME_LIST[$PACKAGE_COUNT]="$APPNAME"
+		PACKAGE_COUNT=$((PACKAGE_COUNT + 1))
 	done
 }
 
@@ -845,51 +769,6 @@ SetPackageFileTimes () {
 	else
 		TZ=UTC touch -d "$BUILDTIMESTAMP" "$CACHEPATH/$FILENAME" 2>/dev/null
 	fi
-}
-
-GetAppNameFromMAUID () {
-# Performs a reverse look-up from MAUID to friendly name
-	case "$1" in
-		$MAUID_MAU4X)			APPNAME="MAU 4.x"
-								;;
-		$MAUID_WORD2019)		APPNAME="Word 365/2024/2021"
-								;;
-		$MAUID_EXCEL2019)		APPNAME="Excel 365/2024/2021"
-								;;
-		$MAUID_POWERPOINT2019)	APPNAME="PowerPoint 365/2024/2021"
-								;;
-		$MAUID_OUTLOOK2019)		APPNAME="Outlook 365/2024/2021"
-								;;
-		$MAUID_ONENOTE2019)		APPNAME="OneNote 365/2024/2021"
-								;;
-		$MAUID_SKYPE2016)		APPNAME="Skype for Business"
-								;;
-		$MAUID_INTUNECP)		APPNAME="Intune Company Portal"
-								;;
-		$MAUID_REMOTEDESKTOP10)	APPNAME="Windows App"
-								;;
-		$MAUID_ONEDRIVE)		APPNAME="OneDrive"
-								;;
-		$MAUID_DEFENDER)		APPNAME="Defender for Endpoint"
-								;;
-		$MAUID_DEFENDER_SHIM)		APPNAME="Defender Shim"
-								;;
-		$MAUID_DEFENDER_CONSUMERS)	APPNAME="Defender Consumers"
-								;;
-		$MAUID_EDGE)			APPNAME="Edge"
-								;;
-		$MAUID_TEAMS2)			APPNAME="Teams 2.1"
-								;;
-		$MAUID_OFFICELICHELPER)	APPNAME="Office Licensing Helper"
-								;;
-		$MAUID_REMOTEHELP)	APPNAME="Remote Help"
-								;;
-		$MAUID_QUICKASSIST)	APPNAME="Quick Assist"
-								;;
-		$MAUID_COPILOT)		APPNAME="Microsoft Copilot"
-								;;
-	esac
-	echo "$APPNAME"
 }
 
 GetDownloadSize () {
@@ -1041,9 +920,6 @@ else
 		--CleanUp|-cu|--cleanup)
 			CLEANUP=true
 			;;
-		--HTTPOnly|-u|--httponly)
-			HTTPONLY=true
-			;;
 		--NoPackages|-np|--nopackages)
 			NOPACKAGES=true
 			;;
@@ -1093,10 +969,8 @@ do
 	# Phase 1: Download collateral files and build a download plan for missing packages
 	for c in "${CHANNELS[@]}"
 	do
-		# Resolve collateral download URL
-		COLLATERALURL=$(ResolveDownloadUrl "$c")
-		# Download list of production builds as source
-		DownloadProductionBuildSource "$COLLATERALURL"
+		# Use the current Microsoft CDN URL directly
+		COLLATERALURL="$c"
 		# Build an array of the collateral files to download
 		BuildCollateralArray "$COLLATERALURL"
 		# Download collateral files for each application
@@ -1109,7 +983,7 @@ do
 		do
 			ArchiveCollateralFiles "$a"
 			if [ "$NOPACKAGES" != true ]; then
-				APPNAME=$(GetAppNameFromMAUID "$a")
+				APPNAME="${MAU_APP_NAMES[${a#${MAU_PREFIX}}]:-${a#${MAU_PREFIX}}}"
 				echo "Building package list and download plan for $APPNAME ..."
 				BuildPackageListFromManifest "$a"
 				BuildDownloadPlan "$APPNAME" "$CURRENT_PACKAGE_START_INDEX"
