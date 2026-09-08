@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TOOL_NAME="Microsoft AutoUpdate Cache Admin"
-TOOL_VERSION="3.10"
+TOOL_VERSION="3.11"
 
 ## Copyright (c) 2023 Microsoft Corp. All rights reserved.
 ## Scripts are not supported under any Microsoft standard support program or service. The scripts are provided AS IS without warranty of any kind.
@@ -17,6 +17,7 @@ TOOL_VERSION="3.10"
 # Configure automatic cleanup of old data. Make sure to account for older versions you may want to continue hosting.
 CLEANUP=false
 CLEANUP_DAYS=90
+CLEANUP_PERCENT=20
 
 # Initialize optional runtime flags
 : "${CACHEPATH:=}"
@@ -27,6 +28,14 @@ CLEANUP_DAYS=90
 : "${INSIDER:=false}"
 : "${COPYCOLLATERALFROM:=}"
 : "${COPYCOLLATERALTO:=}"
+: "${VERBOSE:=false}"
+
+DebugLog () {
+# Emits additional runtime details when verbose mode is enabled
+	if [ "$VERBOSE" = true ]; then
+		echo "[DEBUG] $*"
+	fi
+}
 
 # Variables for HipChat Notifications
 : "${HIPCHAT_NOTIFY:=false}"
@@ -129,8 +138,9 @@ ShowUsage () {
 # Shows tool usage and parameters
 	echo $TOOL_NAME - $TOOL_VERSION
 	echo "Purpose: Downloads MAU collateral and packages from the Office CDN to a local web server"
-	echo "Usage: MAUCacheAdmin --CachePath:<path> [--CheckInterval:<minutes>] [--CleanUp] [--HTTPOnly] [--NoPackages] [--NoCollateral] [--ShowCollateral] [--CopyCollateralFrom:<from Folder>] [--CopyCollateralTo:<to Folder>] [--InsiderSupport]"
+	echo "Usage: MAUCacheAdmin --CachePath:<path> [--CheckInterval:<minutes>] [--CleanUp] [--HTTPOnly] [--NoPackages] [--NoCollateral] [--Verbose] [--ShowCollateral] [--CopyCollateralFrom:<from Folder>] [--CopyCollateralTo:<to Folder>] [--InsiderSupport]"
 	echo "Example: MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --CheckInterval:60"
+	echo "Example: MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --CleanUp --Verbose"
 	echo "Example: MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --ShowCollateral"
 	echo "Example: MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --CopyCollateralFrom:15.27.16101000 --CopyCollateralTo:Production"
 	echo
@@ -160,6 +170,8 @@ InitializeRunMetrics () {
 # Initializes per-run capacity metrics
 	ACTIVE_EXISTING_BYTES=0
 	ACTIVE_EXISTING_COUNT=0
+	OUTDATED_EXISTING_BYTES=0
+	OUTDATED_EXISTING_COUNT=0
 	MISSING_DOWNLOAD_BYTES=0
 	MISSING_DOWNLOAD_COUNT=0
 	CLEANUP_CANDIDATE_BYTES=0
@@ -217,6 +229,10 @@ RunDownloadPlan () {
 GetFileSizeByPath () {
 # Gets the size of a file from an absolute path
 	local FILEPATH="$1"
+	if [ ! -f "$FILEPATH" ]; then
+		echo "0"
+		return 0
+	fi
 	if [ "$PLATFORM" == "Darwin" ]; then
 		stat -qf%z "$FILEPATH"
 	else
@@ -229,6 +245,23 @@ GetFreeSpaceBytes () {
 	df -kP "$CACHEPATH" | awk 'NR==2 {print $4 * 1024}'
 }
 
+GetTotalSpaceBytes () {
+# Returns total bytes for the filesystem that hosts CACHEPATH
+	df -kP "$CACHEPATH" | awk 'NR==2 {print $2 * 1024}'
+}
+
+GetFreeSpacePercent () {
+# Returns percentage of free space for the filesystem that hosts CACHEPATH
+	local FREE_BYTES="$1"
+	local TOTAL_BYTES
+	TOTAL_BYTES=$(GetTotalSpaceBytes)
+	if [ "$TOTAL_BYTES" -le 0 ]; then
+		echo "0.00"
+		return 0
+	fi
+	awk -v free="$FREE_BYTES" -v total="$TOTAL_BYTES" 'BEGIN {printf "%.2f", (free / total) * 100}'
+}
+
 FormatBytesToGB () {
 # Formats bytes to GiB with two decimals
 	local BYTES="$1"
@@ -236,7 +269,7 @@ FormatBytesToGB () {
 }
 
 CalculateCleanupCandidates () {
-# Calculates cleanup candidates based on configured retention
+# Calculates the oldest outdated files needed to restore free-space above the configured threshold.
 	CLEANUP_CANDIDATE_BYTES=0
 	CLEANUP_CANDIDATE_COUNT=0
 
@@ -244,27 +277,224 @@ CalculateCleanupCandidates () {
 		return
 	fi
 
-	while IFS= read -r -d '' FILEPATH
+	FREE_SPACE_CURRENT_BYTES=$(GetFreeSpaceBytes)
+	FREE_SPACE_PROJECTED_BYTES=$((FREE_SPACE_CURRENT_BYTES - MISSING_DOWNLOAD_BYTES))
+
+	local TOTAL_BYTES FREE_THRESHOLD_BYTES REQUIRED_BYTES
+	TOTAL_BYTES=$(GetTotalSpaceBytes)
+	if [ "$TOTAL_BYTES" -le 0 ]; then
+		return
+	fi
+	FREE_THRESHOLD_BYTES=$((TOTAL_BYTES * CLEANUP_PERCENT / 100))
+
+	if [ "$FREE_SPACE_CURRENT_BYTES" -ge "$FREE_THRESHOLD_BYTES" ] && [ "$FREE_SPACE_PROJECTED_BYTES" -ge "$FREE_THRESHOLD_BYTES" ]; then
+		while IFS= read -r -d '' FILEPATH
+		do
+			FILESIZE=$(GetFileSizeByPath "$FILEPATH")
+			CLEANUP_CANDIDATE_BYTES=$((CLEANUP_CANDIDATE_BYTES + FILESIZE))
+			CLEANUP_CANDIDATE_COUNT=$((CLEANUP_CANDIDATE_COUNT + 1))
+		done < <(find "$CACHEPATH" -type f -mtime +"$CLEANUP_DAYS" -print0)
+		return
+	fi
+
+	REQUIRED_BYTES=0
+	if [ "$FREE_SPACE_CURRENT_BYTES" -lt "$FREE_THRESHOLD_BYTES" ]; then
+		REQUIRED_BYTES=$((FREE_THRESHOLD_BYTES - FREE_SPACE_CURRENT_BYTES))
+	fi
+	if [ "$FREE_SPACE_PROJECTED_BYTES" -lt "$FREE_THRESHOLD_BYTES" ]; then
+		local PROJECTED_DEFICIT=$((FREE_THRESHOLD_BYTES - FREE_SPACE_PROJECTED_BYTES))
+		if [ "$PROJECTED_DEFICIT" -gt "$REQUIRED_BYTES" ]; then
+			REQUIRED_BYTES="$PROJECTED_DEFICIT"
+		fi
+	fi
+
+	local -A CURRENT_PACKAGE_NAMES=()
+	for ((idx=0; idx<PACKAGE_COUNT; idx++))
 	do
+		CURRENT_PACKAGE_NAMES["${PACKAGE_NAME_LIST[$idx]}"]=1
+	done
+
+	local FILEPATH FILENAME FILESIZE
+	while IFS=$'\t' read -r FILEMTIME FILEPATH; do
+		[ -n "$FILEPATH" ] || continue
+		FILENAME="${FILEPATH##*/}"
+		case "$FILENAME" in
+			*.part|*.xml|*.cat|*.txt)
+				continue
+				;;
+		esac
+		if [[ -n "${CURRENT_PACKAGE_NAMES[$FILENAME]:-}" ]]; then
+			continue
+		fi
 		FILESIZE=$(GetFileSizeByPath "$FILEPATH")
+		if [ "$FILESIZE" -le 0 ]; then
+			continue
+		fi
 		CLEANUP_CANDIDATE_BYTES=$((CLEANUP_CANDIDATE_BYTES + FILESIZE))
 		CLEANUP_CANDIDATE_COUNT=$((CLEANUP_CANDIDATE_COUNT + 1))
-	done < <(find "$CACHEPATH" -type f -mtime +"$CLEANUP_DAYS" -print0)
+		if [ "$CLEANUP_CANDIDATE_BYTES" -ge "$REQUIRED_BYTES" ]; then
+			break
+		fi
+	done < <(BuildOutdatedFileList | sort -n)
+}
+
+GetFileMTimeEpoch () {
+# Returns a file's modification time in Unix epoch seconds
+	local FILEPATH="$1"
+	if [ ! -f "$FILEPATH" ]; then
+		echo "0"
+		return 0
+	fi
+	if [ "$PLATFORM" == "Darwin" ]; then
+		stat -f %m "$FILEPATH"
+	else
+		stat -c %Y "$FILEPATH"
+	fi
+}
+
+BuildOutdatedFileList () {
+# Builds a sorted list of outdated cache files, oldest first, excluding current manifest entries
+	local -A CURRENT_PACKAGE_NAMES=()
+	for ((idx=0; idx<PACKAGE_COUNT; idx++))
+	do
+		CURRENT_PACKAGE_NAMES["${PACKAGE_NAME_LIST[$idx]}"]=1
+	done
+
+	while IFS= read -r FILEPATH; do
+		FILENAME="${FILEPATH##*/}"
+		case "$FILENAME" in
+			*.part|*.xml|*.cat|*.txt)
+				continue
+				;;
+		esac
+		if [[ -n "${CURRENT_PACKAGE_NAMES[$FILENAME]:-}" ]]; then
+			continue
+		fi
+		FILEMTIME=$(GetFileMTimeEpoch "$FILEPATH")
+		if [ -n "$FILEMTIME" ] && [ "$FILEMTIME" -gt 0 ]; then
+			printf '%s\t%s\n' "$FILEMTIME" "$FILEPATH"
+		fi
+	done < <(find "$CACHEPATH" -maxdepth 1 -type f -print)
+}
+
+CleanupOutdatedFilesByPercent () {
+# Deletes the oldest outdated files only as long as needed to restore the free-space threshold
+	if [ "$CLEANUP" != true ]; then
+		return 0
+	fi
+
+	local TOTAL_BYTES FREE_THRESHOLD_BYTES
+	TOTAL_BYTES=$(GetTotalSpaceBytes)
+	if [ "$TOTAL_BYTES" -le 0 ]; then
+		return 0
+	fi
+	FREE_THRESHOLD_BYTES=$((TOTAL_BYTES * CLEANUP_PERCENT / 100))
+
+	FREE_SPACE_CURRENT_BYTES=$(GetFreeSpaceBytes)
+	FREE_SPACE_PROJECTED_BYTES=$((FREE_SPACE_CURRENT_BYTES - MISSING_DOWNLOAD_BYTES))
+	DebugLog "cleanup threshold check: current=${FREE_SPACE_CURRENT_BYTES} projected=${FREE_SPACE_PROJECTED_BYTES} threshold=${FREE_THRESHOLD_BYTES} total=${TOTAL_BYTES}"
+	if [ "$FREE_SPACE_CURRENT_BYTES" -ge "$FREE_THRESHOLD_BYTES" ] && [ "$FREE_SPACE_PROJECTED_BYTES" -ge "$FREE_THRESHOLD_BYTES" ]; then
+		DebugLog "cleanup skipped: free-space threshold already satisfied"
+		return 0
+	fi
+
+	local BATCH_DATE=""
+	local BATCH_FILES=()
+	local BATCH_BYTES=0
+	local FILEMTIME FILEDATE FILESIZE DELETED_THIS_BATCH=0
+	local CURRENT_FILEPATH DELETE_FILEPATH
+	while IFS=$'\t' read -r FILEMTIME CURRENT_FILEPATH; do
+		[ -n "$CURRENT_FILEPATH" ] || continue
+		FILEDATE=$(date -r "$FILEMTIME" +"%Y-%m-%d" 2>/dev/null || date -d "@$FILEMTIME" +"%Y-%m-%d" 2>/dev/null || echo "1970-01-01")
+
+		if [ -n "$BATCH_DATE" ] && [ "$FILEDATE" != "$BATCH_DATE" ]; then
+			DebugLog "batch boundary: date=${BATCH_DATE} files=${#BATCH_FILES[@]} bytes=${BATCH_BYTES} current=${FREE_SPACE_CURRENT_BYTES} projected=${FREE_SPACE_PROJECTED_BYTES} threshold=${FREE_THRESHOLD_BYTES}"
+			if [ "$FREE_SPACE_CURRENT_BYTES" -lt "$FREE_THRESHOLD_BYTES" ] || [ "$FREE_SPACE_PROJECTED_BYTES" -lt "$FREE_THRESHOLD_BYTES" ]; then
+				DELETED_THIS_BATCH=0
+				for DELETE_FILEPATH in "${BATCH_FILES[@]}"; do
+					[ -n "$DELETE_FILEPATH" ] || continue
+					[ -f "$DELETE_FILEPATH" ] || continue
+					FILESIZE=$(GetFileSizeByPath "$DELETE_FILEPATH")
+					if [ "$FILESIZE" -le 0 ]; then
+						continue
+					fi
+					rm -f "$DELETE_FILEPATH"
+					FREE_SPACE_CURRENT_BYTES=$((FREE_SPACE_CURRENT_BYTES + FILESIZE))
+					FREE_SPACE_PROJECTED_BYTES=$((FREE_SPACE_PROJECTED_BYTES + FILESIZE))
+					DELETED_THIS_BATCH=$((DELETED_THIS_BATCH + 1))
+					DebugLog "deleted one file: date=${BATCH_DATE} path=${DELETE_FILEPATH} size=${FILESIZE} current=${FREE_SPACE_CURRENT_BYTES} projected=${FREE_SPACE_PROJECTED_BYTES}"
+					if [ "$FREE_SPACE_CURRENT_BYTES" -ge "$FREE_THRESHOLD_BYTES" ] && [ "$FREE_SPACE_PROJECTED_BYTES" -ge "$FREE_THRESHOLD_BYTES" ]; then
+						break
+					fi
+				done
+				if [ "$DELETED_THIS_BATCH" -gt 0 ]; then
+					echo "Removed $DELETED_THIS_BATCH outdated files from $BATCH_DATE to restore free space above ${CLEANUP_PERCENT}%"
+				fi
+			else
+				DebugLog "batch ${BATCH_DATE} not deleted because threshold is already restored"
+			fi
+			BATCH_FILES=()
+			BATCH_DATE=""
+			BATCH_BYTES=0
+		fi
+
+		if [ -z "$BATCH_DATE" ]; then
+			BATCH_DATE="$FILEDATE"
+		fi
+		BATCH_FILES+=("$CURRENT_FILEPATH")
+		FILESIZE=$(GetFileSizeByPath "$CURRENT_FILEPATH")
+		if [ -f "$CURRENT_FILEPATH" ] && [ "$FILESIZE" -gt 0 ]; then
+			BATCH_BYTES=$((BATCH_BYTES + FILESIZE))
+		fi
+		DebugLog "considered file: date=${FILEDATE} path=${CURRENT_FILEPATH} size=${FILESIZE} batch_bytes=${BATCH_BYTES}"
+
+		if [ "$FREE_SPACE_CURRENT_BYTES" -ge "$FREE_THRESHOLD_BYTES" ] && [ "$FREE_SPACE_PROJECTED_BYTES" -ge "$FREE_THRESHOLD_BYTES" ]; then
+			DebugLog "threshold restored; breaking loop"
+			break
+		fi
+	done < <(BuildOutdatedFileList | sort -n)
+
+	if [ -n "$BATCH_DATE" ] && [ "${#BATCH_FILES[@]}" -gt 0 ] && { [ "$FREE_SPACE_CURRENT_BYTES" -lt "$FREE_THRESHOLD_BYTES" ] || [ "$FREE_SPACE_PROJECTED_BYTES" -lt "$FREE_THRESHOLD_BYTES" ]; }; then
+		DebugLog "final batch check: date=${BATCH_DATE} files=${#BATCH_FILES[@]} bytes=${BATCH_BYTES} current=${FREE_SPACE_CURRENT_BYTES} projected=${FREE_SPACE_PROJECTED_BYTES} threshold=${FREE_THRESHOLD_BYTES}"
+		DELETED_THIS_BATCH=0
+		for DELETE_FILEPATH in "${BATCH_FILES[@]}"; do
+			[ -n "$DELETE_FILEPATH" ] || continue
+			[ -f "$DELETE_FILEPATH" ] || continue
+			FILESIZE=$(GetFileSizeByPath "$DELETE_FILEPATH")
+			if [ "$FILESIZE" -le 0 ]; then
+				continue
+			fi
+			rm -f "$DELETE_FILEPATH"
+			FREE_SPACE_CURRENT_BYTES=$((FREE_SPACE_CURRENT_BYTES + FILESIZE))
+			FREE_SPACE_PROJECTED_BYTES=$((FREE_SPACE_PROJECTED_BYTES + FILESIZE))
+			DELETED_THIS_BATCH=$((DELETED_THIS_BATCH + 1))
+			DebugLog "deleted remaining batch file: date=${BATCH_DATE} path=${DELETE_FILEPATH} size=${FILESIZE} current=${FREE_SPACE_CURRENT_BYTES} projected=${FREE_SPACE_PROJECTED_BYTES}"
+			if [ "$FREE_SPACE_CURRENT_BYTES" -ge "$FREE_THRESHOLD_BYTES" ] && [ "$FREE_SPACE_PROJECTED_BYTES" -ge "$FREE_THRESHOLD_BYTES" ]; then
+				break
+			fi
+		done
+		if [ "$DELETED_THIS_BATCH" -gt 0 ]; then
+			echo "Removed $DELETED_THIS_BATCH outdated files from $BATCH_DATE to restore free space above ${CLEANUP_PERCENT}%"
+		fi
+	fi
+
+	CountOutdatedPackages
 }
 
 ShowCapacitySummary () {
 # Shows capacity plan summary for this run
-	CalculateCleanupCandidates
 	FREE_SPACE_CURRENT_BYTES=$(GetFreeSpaceBytes)
-	FREE_SPACE_PROJECTED_BYTES=$((FREE_SPACE_START_BYTES - MISSING_DOWNLOAD_BYTES + CLEANUP_CANDIDATE_BYTES))
+	CalculateCleanupCandidates
+	FREE_SPACE_PROJECTED_BYTES=$((FREE_SPACE_CURRENT_BYTES - MISSING_DOWNLOAD_BYTES + CLEANUP_CANDIDATE_BYTES))
 
 	echo "----------------------------------------------------------------------------------------"
 	echo "Capacity Summary"
 	echo "Active existing:       $ACTIVE_EXISTING_COUNT files ($(FormatBytesToGB "$ACTIVE_EXISTING_BYTES") GiB)"
+	echo "Outdated existing:     $OUTDATED_EXISTING_COUNT files ($(FormatBytesToGB "$OUTDATED_EXISTING_BYTES") GiB)"
 	echo "To download:           $MISSING_DOWNLOAD_COUNT files ($(FormatBytesToGB "$MISSING_DOWNLOAD_BYTES") GiB)"
-	echo "Cleanup candidates:    $CLEANUP_CANDIDATE_COUNT files ($(FormatBytesToGB "$CLEANUP_CANDIDATE_BYTES") GiB)"
-	echo "Free space now:        $(FormatBytesToGB "$FREE_SPACE_CURRENT_BYTES") GiB"
-	echo "Projected free space:  $(FormatBytesToGB "$FREE_SPACE_PROJECTED_BYTES") GiB"
+	echo "Cleanup candidates:    $CLEANUP_CANDIDATE_COUNT files ($(FormatBytesToGB "$CLEANUP_CANDIDATE_BYTES") GiB)" && if [ "$CLEANUP" != true ]; then echo "(Cleanup is disabled)"; fi
+	echo "Free space now:        $(FormatBytesToGB "$FREE_SPACE_CURRENT_BYTES") GiB ($(GetFreeSpacePercent "$FREE_SPACE_CURRENT_BYTES")% free)"
+	echo "Projected free space:  $(FormatBytesToGB "$FREE_SPACE_PROJECTED_BYTES") GiB ($(GetFreeSpacePercent "$FREE_SPACE_PROJECTED_BYTES")% free)"
 	echo "----------------------------------------------------------------------------------------"
 	echo
 }
@@ -495,6 +725,35 @@ CountExistingPackages () {
 	done
 }
 
+CountOutdatedPackages () {
+# Counts cached package files that are no longer part of the current manifest set
+	local -A CURRENT_PACKAGE_NAMES=()
+	for ((idx=0; idx<PACKAGE_COUNT; idx++))
+	do
+		CURRENT_PACKAGE_NAMES["${PACKAGE_NAME_LIST[$idx]}"]=1
+	done
+
+	OUTDATED_EXISTING_COUNT=0
+	OUTDATED_EXISTING_BYTES=0
+
+	while IFS= read -r FILEPATH; do
+		FILENAME="${FILEPATH##*/}"
+		case "$FILENAME" in
+			*.part|*.xml|*.cat|*.txt)
+				continue
+				;;
+		esac
+		if [[ -n "${CURRENT_PACKAGE_NAMES[$FILENAME]:-}" ]]; then
+			continue
+		fi
+		FILESIZE=$(GetFileSizeByPath "$FILEPATH")
+		if [ "$FILESIZE" -gt 0 ]; then
+			OUTDATED_EXISTING_COUNT=$((OUTDATED_EXISTING_COUNT + 1))
+			OUTDATED_EXISTING_BYTES=$((OUTDATED_EXISTING_BYTES + FILESIZE))
+		fi
+	done < <(find "$CACHEPATH" -maxdepth 1 -type f -print)
+}
+
 CheckCachedPackages () {
 # Refreshes mtimes and removes corrupt cached packages from the shared in-memory package list
 	for ((idx=0; idx<PACKAGE_COUNT; idx++))
@@ -505,9 +764,9 @@ CheckCachedPackages () {
 			PACKAGESIZELOCAL=$(GetLocalSize "$PACKAGENAME")
 			if [ "$PACKAGESIZELOCAL" == "$PACKAGESIZECDN" ]; then
 				touch -c -m "$CACHEPATH/$PACKAGENAME"
-				echo Package "$PACKAGENAME" already exists in the cache ...updating timestamp
+				DebugLog "Package $PACKAGENAME already exists in the cache ...updating timestamp"
 			else
-				echo Package "$PACKAGENAME" exists in the cache but is corrupt ...removing
+				DebugLog "Package $PACKAGENAME exists in the cache but is corrupt ...removing"
 				rm -f "$CACHEPATH/$PACKAGENAME"
 				APPNAME="${PACKAGE_APPNAME_LIST[$idx]}"
 				PACKAGEURL="${PACKAGE_URL_LIST[$idx]}"
@@ -804,6 +1063,9 @@ else
 		--InsiderSupport|-is|--insidersupport)
 			INSIDER=true
 			;;
+		--Verbose|-v|--verbose)
+			VERBOSE=true
+			;;
 		*)
 			ShowUsage
 			;;
@@ -860,6 +1122,7 @@ do
 	# Phase 2: Count already cached packages before showing the summary
 	if [ "$NOPACKAGES" != true ]; then
 		CountExistingPackages
+		CountOutdatedPackages
 	fi
 
 	# Show a summary and capacity plan before execution
@@ -886,12 +1149,18 @@ do
 		echo
 	fi
 
-	# Phase 4: Cleanup outdated files according to the configured retention period, if specified
+	# Phase 4: Cleanup outdated files based on free-space pressure or retention age
 	if [ "$CLEANUP" = true ]; then
+		echo "Cleanup threshold check is enabled. Outdated files will be removed when free space falls below ${CLEANUP_PERCENT}% and the files are no longer in the current XML set."
+		echo "  Waiting 5 seconds before cleanup execution. Press Ctrl+C to cancel..."
+		sleep 5
+
+		CleanupOutdatedFilesByPercent
+
 		echo "Cleanup of old files is enabled. Files older than $CLEANUP_DAYS days will be removed."
 		echo "  Waiting 5 seconds before cleanup execution. Press Ctrl+C to cancel..."
 		sleep 5
-		
+
 		CleanupOldFiles
 
 		cecho $green "Cleanup of old files completed."
