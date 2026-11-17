@@ -2,7 +2,11 @@
 <b>Microsoft AutoUpdate Cache Admin</b>
 
 Purpose: Downloads MAU collateral and packages from the Office CDN to a local web server</br>
-Usage: `MAUCacheAdmin --CachePath:<path> [--CheckInterval:<minutes>] [--CleanUp] [--HTTPOnly] [--NoPackages] [--NoCollateral] [--ShowCollateral] [--CopyCollateralFrom:<from Folder>] [--CopyCollateralTo:<to Folder>] [--InsiderSupport]`</br>
+Usage: `MAUCacheAdmin --CachePath:<path> [--CheckInterval:<minutes>] [--CleanUp] [--HTTPOnly] [--NoPackages] [--NoCollateral] [--ShowCollateral] [--CopyCollateralFrom:<from Folder>] [--CopyCollateralTo:<to Folder>] [--PreviewSupport] [--InsiderSupport]`</br>
+Example: `MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --PreviewSupport`</br>
+
+`--PreviewSupport` additionally caches the Preview channel (Current Channel (Preview)). Microsoft Teams uses this channel for users in Targeted release, and it currently also contains the `_arm64` Teams packages.</br>
+`--InsiderSupport` additionally caches the Preview and Beta channels.</br>
 Example: `MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --CheckInterval:60`</br>
 Example: `MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --ShowCollateral`</br>
 Example: `MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --CopyCollateralFrom:15.27.16101000 --CopyCollateralTo:Production`</br>

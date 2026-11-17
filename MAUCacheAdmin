@@ -24,6 +24,7 @@ CLEANUP_PERCENT=20
 : "${CHECKINTERVAL:=}"
 : "${NOPACKAGES:=false}"
 : "${NOCOLLATERAL:=false}"
+: "${PREVIEW:=false}"
 : "${INSIDER:=false}"
 : "${COPYCOLLATERALFROM:=}"
 : "${COPYCOLLATERALTO:=}"
@@ -162,7 +163,9 @@ ShowUsage () {
 # Shows tool usage and parameters
 	echo $TOOL_NAME - $TOOL_VERSION
 	echo "Purpose: Downloads MAU collateral and packages from the Office CDN to a local web server"
-	echo "Usage: MAUCacheAdmin --CachePath:<path> [--CheckInterval:<minutes>] [--CleanUp] [--NoPackages] [--NoCollateral] [--Verbose] [--ShowCollateral] [--CopyCollateralFrom:<from Folder>] [--CopyCollateralTo:<to Folder>] [--InsiderSupport]"
+	echo "Usage: MAUCacheAdmin --CachePath:<path> [--CheckInterval:<minutes>] [--CleanUp] [--NoPackages] [--NoCollateral] [--Verbose] [--ShowCollateral] [--CopyCollateralFrom:<from Folder>] [--CopyCollateralTo:<to Folder>] [--PreviewSupport] [--InsiderSupport]"
+	echo "  --PreviewSupport  Also cache the Preview channel (Current Channel (Preview), e.g. Teams Targeted release)"
+	echo "  --InsiderSupport  Also cache the Preview and Beta channels"
 	echo "Example: MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --CheckInterval:60"
 	echo "Example: MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --CleanUp --Verbose"
 	echo "Example: MAUCacheAdmin --CachePath:/Volumes/web/MAU/cache --ShowCollateral"
@@ -936,6 +939,9 @@ else
 			COPYCOLLATERALTO=${KEY#*:}
 			CopyCollateral
 			;;
+		--PreviewSupport|-ps|--previewsupport)
+			PREVIEW=true
+			;;
 		--InsiderSupport|-is|--insidersupport)
 			INSIDER=true
 			;;
@@ -960,10 +966,14 @@ do
 	InitializeRunMetrics
 	FREE_SPACE_START_BYTES=$(GetFreeSpaceBytes)
 	# Build channel array
-	CHANNELS[0]="$CHANNEL_COLLATERAL_PROD"
+	CHANNELS=("$CHANNEL_COLLATERAL_PROD")
+	# Preview (formerly Insider Slow) is included by --PreviewSupport and --InsiderSupport
+	if [ "$PREVIEW" = true ] || [ "$INSIDER" = true ]; then
+		CHANNELS+=("$CHANNEL_COLLATERAL_INSIDERSLOW")
+	fi
+	# Beta (formerly Insider Fast) is only included by --InsiderSupport
 	if [ "$INSIDER" = true ]; then
-		CHANNELS[1]="$CHANNEL_COLLATERAL_INSIDERSLOW"
-		CHANNELS[2]="$CHANNEL_COLLATERAL_INSIDERFAST"
+		CHANNELS+=("$CHANNEL_COLLATERAL_INSIDERFAST")
 	fi
 
 	# Phase 1: Download collateral files and build a download plan for missing packages
